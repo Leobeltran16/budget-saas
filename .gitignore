@@ -1,0 +1,16 @@
+# Node
+node_modules/
+
+# Env (MUY IMPORTANTE)
+.env
+.env.local
+.env.production
+
+# Builds
+dist/
+build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
