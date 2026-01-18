@@ -15,22 +15,33 @@ app.set("trust proxy", 1);
 // CORS seguro (local + prod)
 const allowedOrigins = [
   "http://localhost:5173",
-  process.env.CLIENT_URL, // Vercel URL en producción
+  "http://localhost:3000",
+  "https://budget-saas.vercel.app",
+  process.env.CLIENT_URL,
 ].filter(Boolean);
 
 app.use(
   cors({
-    origin: function (origin, callback) {
-      // Permitir requests sin origin (Postman, curl)
+    origin: (origin, callback) => {
+      // Requests sin origin (Postman, curl, server-to-server)
       if (!origin) return callback(null, true);
 
-      if (allowedOrigins.includes(origin)) return callback(null, true);
+      // Permitir cualquier subdominio de Vercel (previews)
+      const isVercel =
+        origin.endsWith(".vercel.app");
 
-      return callback(new Error(`CORS bloqueado para origin: ${origin}`));
+      if (allowedOrigins.includes(origin) || isVercel) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS bloqueado: ${origin}`));
     },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
 
 app.use(express.json());
 
