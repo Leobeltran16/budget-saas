@@ -1,9 +1,7 @@
+// routes/billing.routes.js
 const express = require("express");
 const verificarToken = require("../middleware/verificarToken");
-const {
-  createSubscription,
-  captureOrder,
-} = require("../controllers/paypal.controller");
+const { createSubscription, captureOrder } = require("../controllers/paypal.controller");
 
 const router = express.Router();
 

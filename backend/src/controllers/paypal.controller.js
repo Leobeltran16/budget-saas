@@ -1,139 +1,139 @@
-const paypal = require("@paypal/checkout-server-sdk");
-const Usuario = require("../models/User");
+// controllers/paypal.controller.js
 
-function requirePayPalEnv() {
-  const missing = [];
-  if (!process.env.PAYPAL_CLIENT_ID) missing.push("PAYPAL_CLIENT_ID");
-  if (!process.env.PAYPAL_SECRET) missing.push("PAYPAL_SECRET");
-  return missing;
+const PAYPAL_API_BASE = (process.env.PAYPAL_MODE || "sandbox") === "live"
+  ? "https://api-m.paypal.com"
+  : "https://api-m.sandbox.paypal.com";
+
+const BACKEND_URL =
+  process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3000}`;
+
+const CLIENT_URL =
+  process.env.CLIENT_URL || "http://localhost:5173";
+
+async function getPaypalAccessToken() {
+  const clientId = process.env.PAYPAL_CLIENT_ID;
+  const secret = process.env.PAYPAL_SECRET;
+
+  if (!clientId || !secret) {
+    throw new Error("Faltan PAYPAL_CLIENT_ID o PAYPAL_SECRET en variables de entorno");
+  }
+
+  const auth = Buffer.from(`${clientId}:${secret}`).toString("base64");
+
+  const res = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${auth}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: "grant_type=client_credentials",
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(`PayPal token error: ${JSON.stringify(data)}`);
+  }
+
+  return data.access_token;
 }
 
-function paypalClient() {
-  const isLive = String(process.env.PAYPAL_MODE || "sandbox").toLowerCase() === "live";
-
-  const env = isLive
-    ? new paypal.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_SECRET)
-    : new paypal.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_SECRET);
-
-  return new paypal.core.PayPalHttpClient(env);
-}
-
+// ✅ POST /billing/paypal/create-subscription
+// (Usamos Order CAPTURE para que funcione como pago simple / demo)
 exports.createSubscription = async (req, res) => {
   try {
-    const { plan } = req.body;
-    if (plan !== "pro") return res.status(400).json({ message: "Plan inválido" });
+    const accessToken = await getPaypalAccessToken();
 
-    const missing = requirePayPalEnv();
-    if (missing.length) {
+    const amount = Number(process.env.PRO_PRICE_USD || 3).toFixed(2);
+
+    // ✅ Return/cancel vuelven a TU BACKEND (Render)
+    const returnUrl = `${BACKEND_URL}/billing/paypal/capture`;
+    const cancelUrl = `${CLIENT_URL}/plans?canceled=1`;
+
+    const orderRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        intent: "CAPTURE",
+        purchase_units: [
+          {
+            amount: {
+              currency_code: "USD",
+              value: amount,
+            },
+          },
+        ],
+        application_context: {
+          return_url: returnUrl,
+          cancel_url: cancelUrl,
+          brand_name: "Budget SaaS",
+          user_action: "PAY_NOW",
+        },
+      }),
+    });
+
+    const orderData = await orderRes.json();
+
+    if (!orderRes.ok) {
+      console.error("PayPal create order error:", orderData);
       return res.status(500).json({
-        message: `Faltan variables de PayPal en .env: ${missing.join(", ")} (usá Sandbox primero)`,
+        message: "Error creando orden en PayPal",
+        details: orderData,
       });
     }
 
-    const user = await Usuario.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: "Usuario no encontrado" });
+    // ✅ Buscar link de aprobación
+    const approveLink = (orderData.links || []).find((l) => l.rel === "approve")?.href;
 
-    const price = String(process.env.PRO_PRICE_USD || "3.00");
-    const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:3000";
-    const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+    if (!approveLink) {
+      return res.status(500).json({ message: "No se encontró approve link de PayPal" });
+    }
 
-    const request = new paypal.orders.OrdersCreateRequest();
-    request.prefer("return=representation");
-    request.requestBody({
-      intent: "CAPTURE",
-      purchase_units: [
-        {
-          amount: { currency_code: "USD", value: price },
-          description: "Budget SaaS – Plan PRO (1 mes)",
-          custom_id: String(user._id), // intentamos, pero NO dependemos de esto
-        },
-      ],
-      application_context: {
-        brand_name: "Budget SaaS",
-        landing_page: "BILLING",
-        user_action: "PAY_NOW",
-        return_url: `${BACKEND_URL}/billing/paypal/capture`,
-        cancel_url: `${CLIENT_URL}/billing/cancel`,
-      },
+    return res.json({
+      ok: true,
+      approveUrl: approveLink,
+      orderId: orderData.id,
     });
-
-    const order = await paypalClient().execute(request);
-
-    // ✅ Guardamos el ORDER ID en el usuario para poder resolver en capture aunque custom_id no venga
-    user.billingProvider = "paypal";
-    user.billingStatus = "pending";
-    user.billingSubscriptionId = String(order?.result?.id || null); // usamos este campo como "order id"
-    await user.save();
-
-    const approve = order.result.links?.find((l) => l.rel === "approve");
-    if (!approve?.href) return res.status(500).json({ message: "No se recibió link approve de PayPal" });
-
-    return res.json({ url: approve.href, orderId: order?.result?.id });
   } catch (err) {
-    console.error("PAYPAL createSubscription ERROR:", err);
-    return res.status(500).json({ message: err?.message || "Error PayPal" });
+    console.error(err);
+    return res.status(500).json({ message: err.message || "Error PayPal" });
   }
 };
 
+// ✅ GET /billing/paypal/capture?token=XXXX
 exports.captureOrder = async (req, res) => {
   try {
-    const missing = requirePayPalEnv();
-    const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+    const { token } = req.query;
 
-    if (missing.length) {
-      console.log("PAYPAL capture -> faltan env:", missing);
-      return res.redirect(`${CLIENT_URL}/billing/cancel`);
+    if (!token) {
+      return res.redirect(`${CLIENT_URL}/billing/success?ok=0&reason=missing_token`);
     }
 
-    const orderId = req.query.token;
-    if (!orderId) {
-      console.log("PAYPAL capture -> no vino token/orderId en query");
-      return res.redirect(`${CLIENT_URL}/billing/cancel`);
+    const accessToken = await getPaypalAccessToken();
+
+    const capRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${token}/capture`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    const capData = await capRes.json();
+
+    if (!capRes.ok) {
+      console.error("PayPal capture error:", capData);
+      return res.redirect(`${CLIENT_URL}/billing/success?ok=0&reason=capture_failed`);
     }
 
-    // Capturar pago
-    const request = new paypal.orders.OrdersCaptureRequest(orderId);
-    request.requestBody({});
-
-    const capture = await paypalClient().execute(request);
-
-    const status = capture?.result?.status;
-    const userIdFromCustom = capture?.result?.purchase_units?.[0]?.custom_id;
-
-    console.log("PAYPAL capture -> orderId:", orderId, "status:", status, "custom_id:", userIdFromCustom);
-
-    if (status !== "COMPLETED") {
-      console.log("PAYPAL capture -> no COMPLETED, result:", capture?.result);
-      return res.redirect(`${CLIENT_URL}/billing/cancel`);
-    }
-
-    // ✅ Resolver el usuario: primero por custom_id, si no existe, por billingSubscriptionId (orderId guardado)
-    let user = null;
-
-    if (userIdFromCustom) {
-      user = await Usuario.findById(userIdFromCustom);
-    }
-
-    if (!user) {
-      user = await Usuario.findOne({ billingSubscriptionId: String(orderId), billingStatus: "pending" });
-    }
-
-    if (!user) {
-      console.log("PAYPAL capture -> pago COMPLETED pero no se encontró usuario para orderId:", orderId);
-      return res.redirect(`${CLIENT_URL}/billing/cancel`);
-    }
-
-    // ✅ Activar PRO
-    user.plan = "pro";
-    user.billingProvider = "paypal";
-    user.billingStatus = "active";
-    user.billingSubscriptionId = String(orderId);
-    await user.save();
+    // ✅ TODO: acá podrías actualizar el plan del usuario en tu DB si querés
+    // Ej: set user.plan="pro" y guardar
 
     return res.redirect(`${CLIENT_URL}/billing/success?ok=1`);
   } catch (err) {
-    console.error("PAYPAL captureOrder ERROR:", err);
-    const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
-    return res.redirect(`${CLIENT_URL}/billing/cancel`);
+    console.error(err);
+    return res.redirect(`${CLIENT_URL}/billing/success?ok=0&reason=server_error`);
   }
 };
