@@ -1,21 +1,45 @@
-import { Link, NavLink, useNavigate } from "react-router-dom";
-import { useContext, useMemo, useState } from "react";
+import { useContext, useEffect, useMemo, useState } from "react";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
 
-export default function Navbar({ variant = "sidebar" }) {
+function cx(...arr) {
+  return arr.filter(Boolean).join(" ");
+}
+
+export default function Navbar() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, isAuthenticated, logout } = useContext(AuthContext);
+
   const [open, setOpen] = useState(false);
 
-  const navItems = useMemo(
-    () => [
-      { to: "/", label: "Home", auth: "any" },
-      { to: "/expenses", label: "Gastos", auth: "private" },
-      { to: "/budget", label: "Presupuesto", auth: "private" },
-      { to: "/profile", label: "Perfil", auth: "private" },
-    ],
-    []
-  );
+  const isPro = useMemo(() => String(user?.plan || "").toLowerCase() === "pro", [user]);
+
+  const displayName = useMemo(() => {
+    const n = (user?.name || user?.nombre || "").trim();
+    if (n) return n;
+    const e = (user?.email || "").trim();
+    if (!e) return "Usuario";
+    return e.split("@")[0] || e;
+  }, [user]);
+
+  const dashboardPath = isAuthenticated ? "/app" : "/";
+
+  // ✅ cerrar menú al cambiar de ruta
+  useEffect(() => {
+    setOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
+
+  // ✅ bloquear scroll cuando menú móvil está abierto
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
 
   const handleLogout = () => {
     logout();
@@ -23,126 +47,142 @@ export default function Navbar({ variant = "sidebar" }) {
     navigate("/login");
   };
 
-  const linkBase =
-    "block rounded-xl px-3 py-2 text-sm font-medium border transition";
-  const linkInactive =
-    "text-slate-200/80 border-white/0 hover:bg-white/5 hover:border-white/10";
-  const linkActive =
-    "text-slate-100 bg-indigo-500/15 border-indigo-400/30";
-
-  const renderLinks = () =>
-    navItems
-      .filter((i) => i.auth === "any" || (i.auth === "private" && isAuthenticated))
-      .map((item) => (
-        <NavLink
-          key={item.to}
-          to={item.to}
-          onClick={() => setOpen(false)}
-          className={({ isActive }) =>
-            `${linkBase} ${isActive ? linkActive : linkInactive}`
-          }
-        >
-          {item.label}
-        </NavLink>
-      ));
-
-  const UserCard = () => (
-    <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
-      <div className="text-sm font-semibold">Usuario</div>
-      <div className="mt-1 text-xs text-slate-200/70">{user?.email || ""}</div>
-      <div className="mt-1 text-xs text-slate-200/70">Role: {user?.role || "user"}</div>
-
-      <button
-        onClick={handleLogout}
-        className="mt-4 w-full rounded-xl bg-red-500/90 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-red-500"
-      >
-        Cerrar sesión
-      </button>
-    </div>
+  const NavItem = ({ to, children, onClick }) => (
+    <NavLink
+      to={to}
+      onClick={onClick}
+      className={({ isActive }) =>
+        cx(
+          "rounded-xl px-3 py-2 text-sm font-semibold transition",
+          isActive ? "bg-white/10 text-white" : "text-slate-200/80 hover:bg-white/5 hover:text-white"
+        )
+      }
+      end={to === "/" || to === "/app"}
+    >
+      {children}
+    </NavLink>
   );
 
-  // MOBILE TOPBAR
-  if (variant === "topbar") {
-    return (
-      <div className="px-4 py-3">
-        <div className="flex items-center justify-between">
-          <Link to="/" className="text-lg font-extrabold tracking-tight">
-            BudgetSaaS
-          </Link>
-
-          <button
-            onClick={() => setOpen((v) => !v)}
-            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold hover:bg-white/10"
-            aria-label="Abrir menú"
-          >
-            ☰
-          </button>
-        </div>
-
-        {open && (
-          <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-3">
-            <div className="grid gap-2">{renderLinks()}</div>
-
-            <div className="my-3 h-px bg-white/10" />
-
-            {!isAuthenticated ? (
-              <div className="grid grid-cols-2 gap-2">
-                <Link
-                  to="/login"
-                  onClick={() => setOpen(false)}
-                  className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-center text-sm font-semibold hover:bg-white/10"
-                >
-                  Login
-                </Link>
-                <Link
-                  to="/register"
-                  onClick={() => setOpen(false)}
-                  className="rounded-xl bg-indigo-500/90 px-3 py-2 text-center text-sm font-semibold text-slate-950 hover:bg-indigo-500"
-                >
-                  Register
-                </Link>
-              </div>
-            ) : (
-              <UserCard />
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // DESKTOP SIDEBAR
   return (
-    <div className="flex h-full flex-col gap-4">
-      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-        <Link to="/" className="text-lg font-extrabold tracking-tight">
-          BudgetSaaS
-        </Link>
-        <div className="mt-1 text-xs text-slate-200/70">Gastos & Presupuesto</div>
+    <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-950/70 backdrop-blur">
+      <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
+        <div className="flex items-center gap-3">
+          <Link
+            to={dashboardPath}
+            className="inline-flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 text-sm font-extrabold tracking-tight text-white hover:bg-white/10"
+          >
+            <span className="inline-flex h-2.5 w-2.5 rounded-full bg-indigo-400" />
+            Budget SaaS
+          </Link>
+
+          {isAuthenticated && (
+            <span
+              className={cx(
+                "hidden items-center rounded-full border px-3 py-1 text-xs sm:inline-flex",
+                isPro
+                  ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+                  : "border-indigo-400/30 bg-indigo-500/10 text-indigo-100"
+              )}
+            >
+              Plan: <span className="ml-1 font-semibold">{isPro ? "Pro" : "Free"}</span>
+            </span>
+          )}
+        </div>
+
+        {/* Desktop */}
+        <nav className="hidden items-center gap-1 md:flex">
+          <NavItem to={dashboardPath}>Dashboard</NavItem>
+
+          {isAuthenticated ? (
+            <>
+              <NavItem to="/expenses">Gastos</NavItem>
+              <NavItem to="/budget">Presupuesto</NavItem>
+              <NavItem to="/plans">Planes</NavItem>
+              <NavItem to="/profile">Perfil</NavItem>
+
+              <div className="ml-2 flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+                <span className="text-xs text-slate-200/80">Hola,</span>
+                <span className="text-xs font-semibold text-white">{displayName}</span>
+              </div>
+
+              <button
+                onClick={handleLogout}
+                className="ml-2 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-100"
+              >
+                Salir
+              </button>
+            </>
+          ) : (
+            <>
+              <NavItem to="/login">Login</NavItem>
+              <NavItem to="/register">Registro</NavItem>
+            </>
+          )}
+        </nav>
+
+        {/* Mobile button */}
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white hover:bg-white/10 md:hidden"
+          aria-label="Abrir menú"
+          aria-expanded={open}
+          aria-controls="mobile-menu"
+        >
+          {open ? "Cerrar" : "Menú"}
+        </button>
       </div>
 
-      <nav className="grid gap-2">{renderLinks()}</nav>
+      {/* Mobile menu */}
+      {open && (
+        <div id="mobile-menu" className="border-t border-white/10 bg-slate-950/70 backdrop-blur md:hidden">
+          <div className="mx-auto w-full max-w-7xl px-4 py-3 sm:px-6 lg:px-8">
+            <div className="flex flex-col gap-1">
+              <NavItem to={dashboardPath}>Dashboard</NavItem>
 
-      <div className="flex-1" />
+              {isAuthenticated ? (
+                <>
+                  <NavItem to="/expenses">Gastos</NavItem>
+                  <NavItem to="/budget">Presupuesto</NavItem>
+                  <NavItem to="/plans">Planes</NavItem>
+                  <NavItem to="/profile">Perfil</NavItem>
 
-      {!isAuthenticated ? (
-        <div className="grid gap-2">
-          <Link
-            to="/login"
-            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-center text-sm font-semibold hover:bg-white/10"
-          >
-            Login
-          </Link>
-          <Link
-            to="/register"
-            className="rounded-xl bg-indigo-500/90 px-3 py-2 text-center text-sm font-semibold text-slate-950 hover:bg-indigo-500"
-          >
-            Register
-          </Link>
+                  <div className="mt-2 rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm">
+                        <div className="text-slate-200/70">Cuenta</div>
+                        <div className="font-semibold text-white">{displayName}</div>
+                      </div>
+
+                      <span
+                        className={cx(
+                          "inline-flex items-center rounded-full border px-3 py-1 text-xs",
+                          isPro
+                            ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+                            : "border-indigo-400/30 bg-indigo-500/10 text-indigo-100"
+                        )}
+                      >
+                        {isPro ? "Pro" : "Free"}
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={handleLogout}
+                      className="mt-3 w-full rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-100"
+                    >
+                      Salir
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <NavItem to="/login">Login</NavItem>
+                  <NavItem to="/register">Registro</NavItem>
+                </>
+              )}
+            </div>
+          </div>
         </div>
-      ) : (
-        <UserCard />
       )}
-    </div>
+    </header>
   );
 }

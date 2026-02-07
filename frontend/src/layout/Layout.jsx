@@ -3,27 +3,19 @@ import Navbar from "../components/Navbar";
 
 export default function Layout() {
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      {/* Mobile topbar */}
-      <div className="lg:hidden sticky top-0 z-50 border-b border-white/10 bg-slate-950/80 backdrop-blur">
-        <Navbar variant="topbar" />
+    <div className="min-h-[100dvh] bg-slate-950 text-slate-100">
+      {/* fondo suave */}
+      <div className="pointer-events-none fixed inset-0 -z-10">
+        <div className="absolute inset-0 bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900" />
+        <div className="absolute -top-40 left-1/2 h-80 w-80 -translate-x-1/2 rounded-full bg-indigo-500/10 blur-3xl" />
+        <div className="absolute -bottom-40 right-10 h-80 w-80 rounded-full bg-emerald-500/10 blur-3xl" />
       </div>
 
-      <div className="lg:grid lg:grid-cols-[280px_1fr]">
-        {/* Desktop sidebar */}
-        <aside className="hidden lg:block h-screen sticky top-0 border-r border-white/10 bg-slate-950/60 backdrop-blur">
-          <div className="p-4">
-            <Navbar variant="sidebar" />
-          </div>
-        </aside>
+      <Navbar />
 
-        {/* Main */}
-        <main className="p-4 sm:p-6 lg:p-8">
-          <div className="mx-auto w-full max-w-6xl">
-            <Outlet />
-          </div>
-        </main>
-      </div>
+      <main className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+        <Outlet />
+      </main>
     </div>
   );
 }

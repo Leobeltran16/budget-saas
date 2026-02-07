@@ -1,11 +1,18 @@
 const API_URL =
   import.meta.env.VITE_API_URL?.replace(/\/$/, "") ||
-  "http://localhost:3000"; // fallback local
+  "http://localhost:3000";
 
-export async function apiRequest(path, { method = "GET", body, token } = {}) {
-  const headers = { "Content-Type": "application/json" };
+export async function apiRequest(
+  path,
+  { method = "GET", body, token } = {}
+) {
+  const headers = {
+    "Content-Type": "application/json",
+  };
 
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
 
   const res = await fetch(`${API_URL}${path}`, {
     method,
@@ -17,12 +24,14 @@ export async function apiRequest(path, { method = "GET", body, token } = {}) {
   try {
     data = await res.json();
   } catch {
-    // por si el backend responde vacío o no-json
     data = null;
   }
 
   if (!res.ok) {
-    throw new Error(data?.message || "Error en la petición");
+    const err = new Error(data?.message || "Error en la petición");
+    err.status = res.status;   // ✅ CLAVE para no desloguear por error de red
+    err.data = data;           // opcional (debug)
+    throw err;
   }
 
   return data;

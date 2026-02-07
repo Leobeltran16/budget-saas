@@ -2,94 +2,99 @@ import { useContext, useEffect, useMemo, useState } from "react";
 import { AuthContext } from "../context/AuthContext";
 import { apiRequest } from "../services/api";
 
-function Budget({ monthItems = [], onStatusChange }) {
-  const { token } = useContext(AuthContext);
+function formatMoneyUYU(n) {
+  return new Intl.NumberFormat("es-UY", {
+    style: "currency",
+    currency: "UYU",
+    maximumFractionDigits: 0,
+  }).format(Number(n) || 0);
+}
 
-  const monthKey = new Date().toISOString().slice(0, 7); // YYYY-MM
+export default function Budget({ monthItems = [], monthKey, onStatusChange }) {
+  const { token, user } = useContext(AuthContext);
 
-  const [amount, setAmount] = useState("");
-  const [saved, setSaved] = useState(null);
-  const [error, setError] = useState("");
+  const isPro = String(user?.plan || "").toLowerCase() === "pro";
+
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  const formatMoney = (n) =>
-    new Intl.NumberFormat("es-UY", {
-      style: "currency",
-      currency: "UYU",
-      maximumFractionDigits: 0,
-    }).format(n);
+  const [budgetAmount, setBudgetAmount] = useState("");
+  const [serverBudget, setServerBudget] = useState(null);
+
+  const [error, setError] = useState("");
 
   const totalMonth = useMemo(() => {
-    return monthItems.reduce((acc, x) => acc + (Number(x.amount) || 0), 0);
+    return (monthItems || []).reduce((acc, x) => acc + (Number(x?.amount) || 0), 0);
   }, [monthItems]);
 
-  const remaining = useMemo(() => {
-    if (saved === null) return null;
-    return saved - totalMonth;
-  }, [saved, totalMonth]);
+  const budgetNumber = useMemo(() => {
+    const n = Number(budgetAmount);
+    return Number.isFinite(n) ? n : 0;
+  }, [budgetAmount]);
 
-  const percentRaw = useMemo(() => {
-    if (!saved || saved <= 0) return 0;
-    return (totalMonth / saved) * 100;
-  }, [totalMonth, saved]);
-
-  const percent = Math.round(percentRaw);
-  const barPercent = Math.min(100, Math.max(0, percent));
+  const percentUsed = useMemo(() => {
+    if (!budgetNumber) return 0;
+    return Math.min(100, Math.round((totalMonth / budgetNumber) * 100));
+  }, [totalMonth, budgetNumber]);
 
   const status = useMemo(() => {
-    if (saved === null) return { label: "Sin presupuesto", color: "bg-slate-400" };
-    if (percentRaw >= 100) return { label: "Te pasaste del presupuesto", color: "bg-red-500" };
-    if (percentRaw >= 70) return { label: "Ojo, estás cerca del límite", color: "bg-amber-400" };
-    return { label: "Vas bien", color: "bg-emerald-500" };
-  }, [saved, percentRaw]);
+    if (!budgetNumber) return "none";
+    if (totalMonth > budgetNumber) return "over";
+    if (totalMonth >= budgetNumber * 0.85) return "warn";
+    return "ok";
+  }, [totalMonth, budgetNumber]);
 
   useEffect(() => {
-    if (!onStatusChange) return;
-
-    if (saved === null) onStatusChange("none");
-    else if (percentRaw >= 100) onStatusChange("over");
-    else if (percentRaw >= 70) onStatusChange("warn");
-    else onStatusChange("ok");
-  }, [onStatusChange, saved, percentRaw]);
+    if (typeof onStatusChange === "function") onStatusChange(status);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
 
   const loadBudget = async () => {
     setError("");
+    setLoading(true);
     try {
-      const data = await apiRequest(`/budgets/${monthKey}`, { token });
-      if (data) {
-        setSaved(data.amount);
-        setAmount(String(data.amount));
+      const data = await apiRequest(`/budgets/${encodeURIComponent(monthKey)}`, { token });
+      setServerBudget(data || null);
+
+      if (data?.amount !== undefined && data?.amount !== null) {
+        setBudgetAmount(String(data.amount));
       } else {
-        setSaved(null);
-        setAmount("");
+        setBudgetAmount("");
       }
     } catch (err) {
       setError(err.message || "Error cargando presupuesto");
+      setServerBudget(null);
+      setBudgetAmount("");
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
+    if (!monthKey) return;
     loadBudget();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [monthKey]);
 
-  const saveBudget = async () => {
+  const saveBudget = async (e) => {
+    e.preventDefault();
     setError("");
+
+    const n = Number(budgetAmount);
+    if (!Number.isFinite(n) || n <= 0) {
+      setError("Ingresá un presupuesto válido (mayor a 0).");
+      return;
+    }
+
     setSaving(true);
     try {
-      const num = Number(amount);
-
-      if (!Number.isFinite(num) || num < 0) {
-        setError("Ingresá un número válido (>= 0)");
-        return;
-      }
-
       const data = await apiRequest("/budgets", {
         method: "POST",
         token,
-        body: { month: monthKey, amount: num },
+        body: { amount: n, month: monthKey },
       });
-      setSaved(data.amount);
+
+      setServerBudget(data || null);
     } catch (err) {
       setError(err.message || "Error guardando presupuesto");
     } finally {
@@ -99,87 +104,138 @@ function Budget({ monthItems = [], onStatusChange }) {
 
   return (
     <div className="rounded-2xl border border-white/10 bg-white p-5 shadow-sm">
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-        <h3 className="text-lg font-semibold text-slate-900">Estado del presupuesto</h3>
-        <span className="text-sm text-slate-500">Mes: {monthKey}</span>
-      </div>
-
-      <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
-        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-          <p className="text-slate-500">Gastado</p>
-          <p className="mt-1 text-base font-semibold text-slate-900">{formatMoney(totalMonth)}</p>
-        </div>
-
-        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-          <p className="text-slate-500">Presupuesto</p>
-          <p className="mt-1 text-base font-semibold text-slate-900">
-            {saved === null ? "—" : formatMoney(saved)}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-semibold text-slate-900">Presupuesto del mes</h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Mes: <span className="font-semibold text-slate-900">{monthKey}</span>
           </p>
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-          <p className="text-slate-500">Restante</p>
-          <p className={`mt-1 text-base font-semibold ${remaining < 0 ? "text-red-600" : "text-slate-900"}`}>
-            {saved === null ? "—" : formatMoney(Math.abs(remaining))}
-          </p>
-          {remaining < 0 && <p className="mt-1 text-xs text-red-600">(excedido)</p>}
-        </div>
+        {!isPro && (
+          <span className="inline-flex items-center rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-700">
+            Free: solo mes actual
+          </span>
+        )}
       </div>
 
-      <div className="mt-4 text-sm text-slate-700">
-        <p>
-          Uso: <b className="text-slate-900">{saved === null ? "—" : `${percent}%`}</b>{" "}
-          {saved !== null && (
-            <span className="font-semibold text-slate-700">— {status.label}</span>
-          )}
-        </p>
-
-        <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-slate-200">
-          <div
-            className={`h-full ${status.color} transition-all`}
-            style={{ width: `${saved === null ? 0 : barPercent}%` }}
-          />
+      {error && (
+        <div className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-700">
+          {error}
         </div>
-      </div>
-
-      {saved === null && (
-        <p className="mt-4 text-sm text-slate-600">
-          Todavía no configuraste el presupuesto de este mes.
-        </p>
       )}
 
-      <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-center">
-        <input
-          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:ring-2 focus:ring-indigo-200 sm:w-60"
-          type="number"
-          placeholder="Presupuesto del mes"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          min="0"
-        />
-
-        <div className="flex w-full gap-2 sm:w-auto">
-          <button
-            className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60 sm:w-auto"
-            onClick={saveBudget}
-            disabled={saving}
-          >
-            {saving ? "Guardando..." : "Guardar"}
-          </button>
-
-          <button
-            className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 sm:w-auto"
-            onClick={loadBudget}
-            type="button"
-          >
-            Recargar
-          </button>
+      {loading ? (
+        <div className="mt-4">
+          <div className="h-5 w-40 animate-pulse rounded bg-slate-200" />
+          <div className="mt-3 h-10 w-full animate-pulse rounded-xl bg-slate-100" />
+          <div className="mt-3 h-10 w-full animate-pulse rounded-xl bg-slate-100" />
         </div>
-      </div>
+      ) : (
+        <>
+          {/* Top numbers */}
+          <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-slate-500">Presupuesto</p>
+              <p className="mt-1 text-base font-semibold text-slate-900">
+                {budgetNumber ? formatMoneyUYU(budgetNumber) : "—"}
+              </p>
+            </div>
 
-      {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-slate-500">Gastado</p>
+              <p className="mt-1 text-base font-semibold text-slate-900">{formatMoneyUYU(totalMonth)}</p>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-slate-500">Uso</p>
+              <p className="mt-1 text-base font-semibold text-slate-900">
+                {budgetNumber ? `${percentUsed}%` : "—"}
+              </p>
+            </div>
+          </div>
+
+          {/* Progress */}
+          <div className="mt-4">
+            <div className="flex items-center justify-between text-xs text-slate-600">
+              <span>Progreso</span>
+              <span>
+                {budgetNumber ? `${formatMoneyUYU(totalMonth)} / ${formatMoneyUYU(budgetNumber)}` : "Sin presupuesto"}
+              </span>
+            </div>
+
+            <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-slate-100">
+              <div
+                className={`h-full rounded-full ${
+                  status === "over"
+                    ? "bg-red-600"
+                    : status === "warn"
+                    ? "bg-amber-500"
+                    : "bg-emerald-600"
+                }`}
+                style={{ width: `${budgetNumber ? percentUsed : 0}%` }}
+              />
+            </div>
+
+            {status === "none" && (
+              <p className="mt-2 text-xs text-slate-600">
+                Configurá un presupuesto para activar alertas.
+              </p>
+            )}
+
+            {status === "ok" && (
+              <p className="mt-2 text-xs text-emerald-700">
+                Vas bien: estás dentro del presupuesto.
+              </p>
+            )}
+
+            {status === "warn" && (
+              <p className="mt-2 text-xs text-amber-700">
+                Atención: estás cerca del límite (85%+).
+              </p>
+            )}
+
+            {status === "over" && (
+              <p className="mt-2 text-xs text-red-700">
+                Te pasaste del presupuesto.
+              </p>
+            )}
+          </div>
+
+          {/* Form */}
+          <form onSubmit={saveBudget} className="mt-5 grid gap-3 sm:grid-cols-3">
+            <label className="sm:col-span-2">
+              <span className="mb-1 block text-sm text-slate-600">Monto del presupuesto (UYU)</span>
+              <input
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none"
+                type="number"
+                min="0"
+                step="1"
+                value={budgetAmount}
+                onChange={(e) => setBudgetAmount(e.target.value)}
+                placeholder="Ej: 15000"
+              />
+            </label>
+
+            <button
+              type="submit"
+              disabled={saving}
+              className="mt-6 h-10 rounded-xl bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+            >
+              {saving ? "Guardando..." : serverBudget ? "Actualizar" : "Guardar"}
+            </button>
+          </form>
+
+          {/* Small meta */}
+          <div className="mt-3 text-xs text-slate-500">
+            {serverBudget?._id ? (
+              <span>Guardado en servidor ✅</span>
+            ) : (
+              <span>No hay presupuesto guardado todavía.</span>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
-
-export default Budget;
