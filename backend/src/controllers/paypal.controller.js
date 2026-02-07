@@ -4,20 +4,20 @@ const PAYPAL_API_BASE = (process.env.PAYPAL_MODE || "sandbox") === "live"
   ? "https://api-m.paypal.com"
   : "https://api-m.sandbox.paypal.com";
 
-const BACKEND_URL =
+// ✅ Normalizamos URLs para evitar dobles //
+const RAW_BACKEND_URL =
   process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3000}`;
+const RAW_CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
 
-const CLIENT_URL =
-  process.env.CLIENT_URL || "http://localhost:5173";
+const BACKEND_URL = String(RAW_BACKEND_URL).replace(/\/+$/, ""); // quita / al final
+const CLIENT_URL = String(RAW_CLIENT_URL).replace(/\/+$/, "");   // quita / al final
 
 // ✅ Intentamos cargar el modelo de usuario (según cómo lo tengas nombrado)
 let UserModel = null;
 try {
-  // opción común
   UserModel = require("../models/User");
 } catch (e) {
   try {
-    // opción en español (por si tu proyecto lo tiene así)
     UserModel = require("../models/Usuario");
   } catch (e2) {
     UserModel = null;
@@ -52,20 +52,19 @@ async function getPaypalAccessToken() {
 }
 
 // ✅ POST /billing/paypal/create-subscription
-// (Usamos Order CAPTURE como flujo simple)
 exports.createSubscription = async (req, res) => {
   try {
     const accessToken = await getPaypalAccessToken();
 
     const amount = Number(process.env.PRO_PRICE_USD || 3).toFixed(2);
 
-    // ✅ PayPal vuelve al backend para capturar
+    // ✅ PayPal vuelve al backend para capturar (sin dobles //)
     const returnUrl = `${BACKEND_URL}/billing/paypal/capture`;
 
-    // ✅ Cancel va directo al frontend
+    // ✅ Cancel va directo al frontend (sin dobles //)
     const cancelUrl = `${CLIENT_URL}/billing/cancel`;
 
-    // ✅ Sacar userId del middleware (si la ruta está protegida)
+    // ✅ userId desde middleware (si la ruta está protegida)
     const userId =
       req.user?.id || req.user?._id || req.user?.userId || req.user?.uid || null;
 
@@ -83,7 +82,7 @@ exports.createSubscription = async (req, res) => {
               currency_code: "USD",
               value: amount,
             },
-            // ✅ Guardamos quién es el usuario (para activar PRO en capture)
+            // ✅ Guardamos quién es el usuario para activar PRO en capture
             ...(userId ? { custom_id: String(userId) } : {}),
           },
         ],
@@ -152,10 +151,10 @@ exports.captureOrder = async (req, res) => {
       return res.redirect(`${CLIENT_URL}/billing/success?ok=0&reason=capture_failed`);
     }
 
-    // 2) Intentamos recuperar el userId desde custom_id
+    // 2) Recuperar custom_id (userId) desde la orden
     let customId = capData?.purchase_units?.[0]?.custom_id;
 
-    // A veces no viene en el capture response -> lo pedimos con GET
+    // A veces el capture response no lo trae → lo pedimos con GET
     if (!customId) {
       const getRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${token}`, {
         method: "GET",
@@ -164,26 +163,21 @@ exports.captureOrder = async (req, res) => {
           "Content-Type": "application/json",
         },
       });
+
       const getData = await getRes.json();
       if (getRes.ok) {
         customId = getData?.purchase_units?.[0]?.custom_id;
       }
     }
 
-    // 3) Activar PRO en DB si tenemos modelo + customId
+    // 3) Activar PRO en DB
     if (UserModel && customId) {
       try {
-        await UserModel.findByIdAndUpdate(
-          customId,
-          { plan: "pro" },
-          { new: true }
-        );
+        await UserModel.findByIdAndUpdate(customId, { plan: "pro" }, { new: true });
       } catch (e) {
         console.error("Error actualizando plan en DB:", e);
-        // no cortamos el flujo de success por esto
       }
     } else {
-      // Si no hay modelo o no llegó customId, no podemos activar el plan automáticamente
       if (!UserModel) console.warn("No se encontró modelo de Usuario para actualizar plan.");
       if (!customId) console.warn("No se recibió custom_id para activar el plan.");
     }
