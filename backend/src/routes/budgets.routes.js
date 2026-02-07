@@ -1,37 +1,60 @@
 const express = require("express");
 const Budget = require("../models/Budget");
-const authMiddleware = require("../middleware/auth.middleware");
+const verificarToken = require("../middleware/verificarToken");
 
 const router = express.Router();
 
-// Obtener presupuesto del mes
-router.get("/:month", authMiddleware, async (req, res) => {
+function currentMonthYYYYMM() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+// ✅ NUEVO: GET /budgets -> presupuesto del mes actual
+router.get("/", verificarToken, async (req, res) => {
   try {
-    const { month } = req.params;
-    const budget = await Budget.findOne({ user: req.userId, month });
-    res.json(budget || null);
+    const month = currentMonthYYYYMM();
+    const budget = await Budget.findOne({ user: req.user.id, month });
+    return res.json(budget || null);
   } catch (error) {
-    res.status(500).json({ message: "Error obteniendo presupuesto" });
+    console.error("GET CURRENT BUDGET ERROR:", error);
+    return res.status(500).json({ message: "Error obteniendo presupuesto" });
   }
 });
 
-// Crear / actualizar presupuesto del mes
-router.post("/", authMiddleware, async (req, res) => {
+// Obtener presupuesto del mes (existente)
+router.get("/:month", verificarToken, async (req, res) => {
   try {
-    const { month, amount } = req.body;
-    if (!month || amount === undefined) {
-      return res.status(400).json({ message: "Faltan datos" });
+    const { month } = req.params;
+
+    const budget = await Budget.findOne({ user: req.user.id, month });
+    return res.json(budget || null);
+  } catch (error) {
+    console.error("GET BUDGET ERROR:", error);
+    return res.status(500).json({ message: "Error obteniendo presupuesto" });
+  }
+});
+
+// Crear o actualizar presupuesto (existente)
+router.post("/", verificarToken, async (req, res) => {
+  try {
+    const { amount, month } = req.body;
+
+    if (amount === undefined || !month) {
+      return res.status(400).json({ message: "Faltan datos (amount, month)" });
     }
 
     const budget = await Budget.findOneAndUpdate(
-      { user: req.userId, month },
-      { amount },
-      { upsert: true, new: true }
+      { user: req.user.id, month },
+      { amount: Number(amount) },
+      { new: true, upsert: true }
     );
 
-    res.json(budget);
+    return res.status(201).json(budget);
   } catch (error) {
-    res.status(500).json({ message: "Error guardando presupuesto" });
+    console.error("UPSERT BUDGET ERROR:", error);
+    return res.status(500).json({ message: "Error guardando presupuesto" });
   }
 });
 
