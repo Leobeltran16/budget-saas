@@ -10,6 +10,20 @@ const BACKEND_URL =
 const CLIENT_URL =
   process.env.CLIENT_URL || "http://localhost:5173";
 
+// ✅ Intentamos cargar el modelo de usuario (según cómo lo tengas nombrado)
+let UserModel = null;
+try {
+  // opción común
+  UserModel = require("../models/User");
+} catch (e) {
+  try {
+    // opción en español (por si tu proyecto lo tiene así)
+    UserModel = require("../models/Usuario");
+  } catch (e2) {
+    UserModel = null;
+  }
+}
+
 async function getPaypalAccessToken() {
   const clientId = process.env.PAYPAL_CLIENT_ID;
   const secret = process.env.PAYPAL_SECRET;
@@ -38,16 +52,22 @@ async function getPaypalAccessToken() {
 }
 
 // ✅ POST /billing/paypal/create-subscription
-// (Usamos Order CAPTURE para que funcione como pago simple / demo)
+// (Usamos Order CAPTURE como flujo simple)
 exports.createSubscription = async (req, res) => {
   try {
     const accessToken = await getPaypalAccessToken();
 
     const amount = Number(process.env.PRO_PRICE_USD || 3).toFixed(2);
 
-    // ✅ Return/cancel vuelven a TU BACKEND (Render)
+    // ✅ PayPal vuelve al backend para capturar
     const returnUrl = `${BACKEND_URL}/billing/paypal/capture`;
-    const cancelUrl = `${CLIENT_URL}/plans?canceled=1`;
+
+    // ✅ Cancel va directo al frontend
+    const cancelUrl = `${CLIENT_URL}/billing/cancel`;
+
+    // ✅ Sacar userId del middleware (si la ruta está protegida)
+    const userId =
+      req.user?.id || req.user?._id || req.user?.userId || req.user?.uid || null;
 
     const orderRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
       method: "POST",
@@ -63,6 +83,8 @@ exports.createSubscription = async (req, res) => {
               currency_code: "USD",
               value: amount,
             },
+            // ✅ Guardamos quién es el usuario (para activar PRO en capture)
+            ...(userId ? { custom_id: String(userId) } : {}),
           },
         ],
         application_context: {
@@ -84,15 +106,16 @@ exports.createSubscription = async (req, res) => {
       });
     }
 
-    // ✅ Buscar link de aprobación
     const approveLink = (orderData.links || []).find((l) => l.rel === "approve")?.href;
 
     if (!approveLink) {
       return res.status(500).json({ message: "No se encontró approve link de PayPal" });
     }
 
+    // ✅ Plans.jsx espera res.url
     return res.json({
       ok: true,
+      url: approveLink,
       approveUrl: approveLink,
       orderId: orderData.id,
     });
@@ -113,6 +136,7 @@ exports.captureOrder = async (req, res) => {
 
     const accessToken = await getPaypalAccessToken();
 
+    // 1) Capturamos
     const capRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${token}/capture`, {
       method: "POST",
       headers: {
@@ -128,8 +152,41 @@ exports.captureOrder = async (req, res) => {
       return res.redirect(`${CLIENT_URL}/billing/success?ok=0&reason=capture_failed`);
     }
 
-    // ✅ TODO: acá podrías actualizar el plan del usuario en tu DB si querés
-    // Ej: set user.plan="pro" y guardar
+    // 2) Intentamos recuperar el userId desde custom_id
+    let customId = capData?.purchase_units?.[0]?.custom_id;
+
+    // A veces no viene en el capture response -> lo pedimos con GET
+    if (!customId) {
+      const getRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${token}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+      });
+      const getData = await getRes.json();
+      if (getRes.ok) {
+        customId = getData?.purchase_units?.[0]?.custom_id;
+      }
+    }
+
+    // 3) Activar PRO en DB si tenemos modelo + customId
+    if (UserModel && customId) {
+      try {
+        await UserModel.findByIdAndUpdate(
+          customId,
+          { plan: "pro" },
+          { new: true }
+        );
+      } catch (e) {
+        console.error("Error actualizando plan en DB:", e);
+        // no cortamos el flujo de success por esto
+      }
+    } else {
+      // Si no hay modelo o no llegó customId, no podemos activar el plan automáticamente
+      if (!UserModel) console.warn("No se encontró modelo de Usuario para actualizar plan.");
+      if (!customId) console.warn("No se recibió custom_id para activar el plan.");
+    }
 
     return res.redirect(`${CLIENT_URL}/billing/success?ok=1`);
   } catch (err) {
