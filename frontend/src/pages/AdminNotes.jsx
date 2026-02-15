@@ -54,7 +54,12 @@ export default function AdminNotes() {
     setBusyId(id);
     setError("");
     try {
-      await apiRequest(`/admin/notes/${id}/read`, { method: "PATCH" });
+      // ✅ FIX: tu backend no tiene /read. Es PATCH /admin/notes/:id con {status:"read"}
+      await apiRequest(`/admin/notes/${id}`, {
+        method: "PATCH",
+        body: { status: "read" },
+      });
+
       setNotes((prev) => prev.map((n) => (n._id === id ? { ...n, status: "read" } : n)));
     } catch (e) {
       setError(e?.message || "No se pudo marcar como leído.");
