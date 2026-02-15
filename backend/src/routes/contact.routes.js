@@ -1,92 +1,66 @@
 const express = require("express");
 const router = express.Router();
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 
-function requireEnv(name) {
-  return process.env[name] && String(process.env[name]).trim().length > 0;
+function isNonEmptyString(v) {
+  return typeof v === "string" && v.trim().length > 0;
 }
 
-// ✅ Crea transporter una sola vez
-function createTransporter() {
-  if (!requireEnv("CONTACT_EMAIL") || !requireEnv("CONTACT_EMAIL_PASS")) {
-    return null;
-  }
-
-  return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 587,
-    secure: false, // ✅ STARTTLS (mejor para servidores que bloquean 465)
-    requireTLS: true,
-    auth: {
-      user: process.env.CONTACT_EMAIL,
-      pass: process.env.CONTACT_EMAIL_PASS, // App Password (16 chars)
-    },
-    tls: {
-      servername: "smtp.gmail.com",
-    },
-    // ✅ timeouts más amplios para Render (cold start / red lenta)
-    connectionTimeout: 20000,
-    greetingTimeout: 20000,
-    socketTimeout: 30000,
-  });
-}
-
-let transporter = createTransporter();
-
-function withTimeout(promise, ms, label = "TIMEOUT") {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`${label}: ${ms}ms`)), ms)
-    ),
-  ]);
+function isEmailLike(v) {
+  return isNonEmptyString(v) && v.includes("@") && v.includes(".");
 }
 
 router.post("/", async (req, res) => {
   try {
     const { email, message } = req.body || {};
 
-    if (!email || !message) {
+    if (!isEmailLike(email) || !isNonEmptyString(message)) {
       return res.status(400).json({ message: "Faltan datos" });
     }
 
-    if (!requireEnv("CONTACT_EMAIL") || !requireEnv("CONTACT_EMAIL_PASS")) {
+    const apiKey = process.env.RESEND_API_KEY;
+    const toEmail = process.env.CONTACT_TO_EMAIL;
+    const fromEmail = process.env.CONTACT_FROM_EMAIL;
+
+    if (!isNonEmptyString(apiKey) || !isEmailLike(toEmail) || !isEmailLike(fromEmail)) {
       return res.status(500).json({
         message:
-          "Faltan variables en el servidor: CONTACT_EMAIL / CONTACT_EMAIL_PASS",
+          "Faltan variables en el servidor: RESEND_API_KEY / CONTACT_TO_EMAIL / CONTACT_FROM_EMAIL",
       });
     }
 
-    if (!transporter) transporter = createTransporter();
+    const resend = new Resend(apiKey);
 
-    console.log("[/contact] incoming:", { email });
+    const safeEmail = String(email).trim().slice(0, 200);
+    const safeMessage = String(message).trim().slice(0, 10000);
 
-    const sendPromise = transporter.sendMail({
-      from: `"Budget SaaS" <${process.env.CONTACT_EMAIL}>`,
-      to: process.env.CONTACT_EMAIL,
-      replyTo: email,
-      subject: "Nuevo mensaje desde Privacy",
+    const { data, error } = await resend.emails.send({
+      from: fromEmail,
+      to: [toEmail],
+      reply_to: safeEmail, // para que respondas directo al usuario
+      subject: "Nuevo mensaje desde Budget SaaS (Privacy/Contact)",
       html: `
-        <h3>Nuevo mensaje recibido</h3>
-        <p><b>Email del usuario:</b> ${email}</p>
-        <p><b>Mensaje:</b></p>
-        <p>${String(message).replace(/\n/g, "<br/>")}</p>
+        <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+          <h2>Nuevo mensaje recibido</h2>
+          <p><b>Email del usuario:</b> ${safeEmail}</p>
+          <p><b>Mensaje:</b></p>
+          <div style="white-space: pre-wrap; padding: 12px; border: 1px solid #eee; border-radius: 10px;">
+            ${safeMessage.replace(/</g, "&lt;").replace(/>/g, "&gt;")}
+          </div>
+        </div>
       `,
     });
 
-    // ✅ cortamos a los 30s con error claro (para que no quede “enviando” infinito)
-    await withTimeout(sendPromise, 30000, "SMTP_SEND_TIMEOUT");
+    if (error) {
+      console.error("RESEND ERROR:", error);
+      return res.status(500).json({ message: error.message || "Error enviando mensaje" });
+    }
 
-    console.log("[/contact] sent OK");
-    return res.json({ success: true, message: "Mensaje enviado" });
-  } catch (error) {
-    // ✅ logs completos para ver el motivo real en Render
-    console.error("CONTACT ERROR FULL:", error);
-    console.error("CONTACT ERROR MSG:", error?.message);
-
-    return res.status(500).json({
-      message: error?.message || "Error enviando mensaje",
-    });
+    console.log("RESEND OK:", data?.id);
+    return res.json({ success: true, message: "Mensaje enviado correctamente" });
+  } catch (err) {
+    console.error("CONTACT ERROR:", err);
+    return res.status(500).json({ message: err?.message || "Error enviando mensaje" });
   }
 });
 
