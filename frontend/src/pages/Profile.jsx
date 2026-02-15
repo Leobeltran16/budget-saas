@@ -99,6 +99,7 @@ export default function Profile() {
 
   const email = useMemo(() => (user?.email || "").trim(), [user]);
   const role = useMemo(() => (user?.role || "").trim(), [user]);
+  const isAdmin = useMemo(() => String(user?.role || "").toLowerCase().trim() === "admin", [user]);
 
   const currency = useMemo(() => String(user?.currency || "USD").toUpperCase().trim(), [user]);
 
@@ -278,6 +279,16 @@ export default function Profile() {
           </div>
 
           <div className="flex flex-wrap gap-2">
+            {/* ✅ Botón admin: Ver Notas */}
+            {isAdmin ? (
+              <Link
+                to="/admin/notes"
+                className="rounded-2xl border border-white/20 bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15"
+              >
+                Ver Notas
+              </Link>
+            ) : null}
+
             <button
               onClick={refreshFromServer}
               disabled={busy === "refresh" || loading}

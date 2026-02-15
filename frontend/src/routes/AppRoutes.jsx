@@ -24,16 +24,30 @@ import Terms from "../pages/Terms";
 import Privacy from "../pages/Privacy";
 import Contact from "../pages/Contact";
 
+// ✅ admin
+import AdminNotes from "../pages/AdminNotes";
+
 function SmartFallback() {
   const { isAuthenticated } = useContext(AuthContext);
   return <Navigate to={isAuthenticated ? "/app" : "/"} replace />;
+}
+
+// ✅ Solo admin (y logueado)
+function AdminRoute({ children }) {
+  const { isAuthenticated, user } = useContext(AuthContext);
+
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+
+  const role = String(user?.role || "").toLowerCase();
+  if (role !== "admin") return <Navigate to="/app" replace />;
+
+  return children;
 }
 
 function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Layout />}>
-
         {/* ================= PUBLIC ================= */}
         <Route index element={<Landing />} />
         <Route path="login" element={<Login />} />
@@ -99,6 +113,16 @@ function AppRoutes() {
           }
         />
 
+        {/* ================= ADMIN ================= */}
+        <Route
+          path="admin/notes"
+          element={
+            <AdminRoute>
+              <AdminNotes />
+            </AdminRoute>
+          }
+        />
+
         {/* ================= BILLING ================= */}
         <Route
           path="billing/success"
@@ -120,7 +144,6 @@ function AppRoutes() {
 
         {/* ================= FALLBACK ================= */}
         <Route path="*" element={<SmartFallback />} />
-
       </Route>
     </Routes>
   );

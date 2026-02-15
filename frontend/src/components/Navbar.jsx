@@ -18,6 +18,11 @@ export default function Navbar() {
     [user]
   );
 
+  const isAdmin = useMemo(
+    () => String(user?.role || "").toLowerCase().trim() === "admin",
+    [user]
+  );
+
   const displayName = useMemo(() => {
     const n = (user?.name || user?.nombre || "").trim();
     if (n) return n;
@@ -112,6 +117,10 @@ export default function Navbar() {
               <NavItem to="/expenses">Gastos</NavItem>
               <NavItem to="/budget">Presupuesto</NavItem>
               <NavItem to="/plans">Planes</NavItem>
+
+              {/* ✅ Solo admin */}
+              {isAdmin ? <NavItem to="/admin/notes">Notas</NavItem> : null}
+
               <NavItem to="/profile">Perfil</NavItem>
 
               <div className="ml-2 flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
@@ -169,6 +178,10 @@ export default function Navbar() {
                   <NavItem to="/expenses">Gastos</NavItem>
                   <NavItem to="/budget">Presupuesto</NavItem>
                   <NavItem to="/plans">Planes</NavItem>
+
+                  {/* ✅ Solo admin */}
+                  {isAdmin ? <NavItem to="/admin/notes">Notas</NavItem> : null}
+
                   <NavItem to="/profile">Perfil</NavItem>
 
                   <div className="mt-2 rounded-2xl border border-white/10 bg-white/5 p-3">
