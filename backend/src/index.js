@@ -1,56 +1,77 @@
-// index.js
 require("dotenv").config();
 const express = require("express");
-const cors = require("cors");
 const mongoose = require("mongoose");
+const cors = require("cors");
+const helmet = require("helmet");
 
 const authRoutes = require("./routes/auth.routes");
-const expensesRoutes = require("./routes/expenses.routes");
-const budgetsRoutes = require("./routes/budgets.routes");
-const demoRoutes = require("./routes/demo.routes");
 const billingRoutes = require("./routes/billing.routes");
+const budgetsRoutes = require("./routes/budgets.routes");
+const expensesRoutes = require("./routes/expenses.routes");
+const demoRoutes = require("./routes/demo.routes");
+const contactRoutes = require("./routes/contact.routes");
 
 const app = express();
 
-// ==============================
-// ✅ Middleware
-// ==============================
-app.use(express.json());
+// ==========================
+// Seguridad básica
+// ==========================
+app.use(helmet());
 
-// CORS (ajustado a tu FRONT)
-const allowedOrigin = process.env.CLIENT_URL || "http://localhost:5173";
 app.use(
   cors({
-    origin: allowedOrigin,
-    credentials: false,
+    origin: [
+      "http://localhost:5173", // frontend local
+      process.env.FRONTEND_URL, // producción
+    ],
+    credentials: true,
   })
 );
 
-// ==============================
-// ✅ Routes
-// ==============================
-app.get("/health", (req, res) => res.json({ ok: true }));
+// ==========================
+// Middlewares
+// ==========================
+app.use(express.json());
 
+// ==========================
+// Rutas
+// ==========================
 app.use("/auth", authRoutes);
-app.use("/expenses", expensesRoutes);
-app.use("/budgets", budgetsRoutes);
-app.use("/demo", demoRoutes);
-
-// ✅ CLAVE: esto crea la ruta /billing/paypal/capture
 app.use("/billing", billingRoutes);
+app.use("/budgets", budgetsRoutes);
+app.use("/expenses", expensesRoutes);
+app.use("/demo", demoRoutes);
+app.use("/contact", contactRoutes);
 
-// ==============================
-// ✅ DB + Server
-// ==============================
-const PORT = process.env.PORT || 3000;
+// ==========================
+// Health check
+// ==========================
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
+});
 
+// ==========================
+// Handler global de errores
+// ==========================
+app.use((err, req, res, next) => {
+  console.error("Error global:", err.stack);
+  res.status(500).json({ message: "Error interno del servidor" });
+});
+
+// ==========================
+// Conexión Mongo + Server
+// ==========================
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
-    console.log("✅ MongoDB conectado");
-    app.listen(PORT, () => console.log(`✅ API corriendo en puerto ${PORT}`));
+    console.log("Mongo conectado");
+
+    const PORT = process.env.PORT || 5000;
+
+    app.listen(PORT, () => {
+      console.log(`Servidor corriendo en puerto ${PORT}`);
+    });
   })
   .catch((err) => {
-    console.error("❌ Error MongoDB:", err);
-    process.exit(1);
+    console.error("Error conectando Mongo:", err);
   });

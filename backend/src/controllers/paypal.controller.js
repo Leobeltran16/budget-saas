@@ -9,10 +9,10 @@ const RAW_BACKEND_URL =
   process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3000}`;
 const RAW_CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
 
-const BACKEND_URL = String(RAW_BACKEND_URL).replace(/\/+$/, ""); // quita / al final
-const CLIENT_URL = String(RAW_CLIENT_URL).replace(/\/+$/, "");   // quita / al final
+const BACKEND_URL = String(RAW_BACKEND_URL).replace(/\/+$/, "");
+const CLIENT_URL = String(RAW_CLIENT_URL).replace(/\/+$/, "");
 
-// ✅ Intentamos cargar el modelo de usuario (según cómo lo tengas nombrado)
+// ✅ Modelo usuario
 let UserModel = null;
 try {
   UserModel = require("../models/User");
@@ -51,22 +51,39 @@ async function getPaypalAccessToken() {
   return data.access_token;
 }
 
+function getPricingForCycle(billingCycle) {
+  const cycle = billingCycle === "year" ? "year" : "month";
+
+  const monthly = Number(process.env.PRO_PRICE_USD || 5);
+  const yearly = Number(process.env.PRO_YEAR_PRICE_USD || 50);
+
+  const amount = (cycle === "year" ? yearly : monthly).toFixed(2);
+
+  return { cycle, amount };
+}
+
+function addDays(date, days) {
+  const ms = Number(days) * 24 * 60 * 60 * 1000;
+  return new Date(date.getTime() + ms);
+}
+
 // ✅ POST /billing/paypal/create-subscription
 exports.createSubscription = async (req, res) => {
   try {
     const accessToken = await getPaypalAccessToken();
 
-    const amount = Number(process.env.PRO_PRICE_USD || 3).toFixed(2);
+    const billingCycle = req.body?.billingCycle; // "month" | "year"
+    const { cycle, amount } = getPricingForCycle(billingCycle);
 
-    // ✅ PayPal vuelve al backend para capturar (sin dobles //)
     const returnUrl = `${BACKEND_URL}/billing/paypal/capture`;
-
-    // ✅ Cancel va directo al frontend (sin dobles //)
     const cancelUrl = `${CLIENT_URL}/billing/cancel`;
 
-    // ✅ userId desde middleware (si la ruta está protegida)
-    const userId =
-      req.user?.id || req.user?._id || req.user?.userId || req.user?.uid || null;
+    // ✅ userId desde middleware (esta ruta requiere JWT)
+    const userId = req.user?.id || null;
+
+    // ✅ guardamos userId + ciclo en custom_id
+    // formato: "<userId>|<cycle>"
+    const customId = userId ? `${String(userId)}|${cycle}` : null;
 
     const orderRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
       method: "POST",
@@ -78,12 +95,8 @@ exports.createSubscription = async (req, res) => {
         intent: "CAPTURE",
         purchase_units: [
           {
-            amount: {
-              currency_code: "USD",
-              value: amount,
-            },
-            // ✅ Guardamos quién es el usuario para activar PRO en capture
-            ...(userId ? { custom_id: String(userId) } : {}),
+            amount: { currency_code: "USD", value: amount },
+            ...(customId ? { custom_id: customId } : {}),
           },
         ],
         application_context: {
@@ -111,11 +124,10 @@ exports.createSubscription = async (req, res) => {
       return res.status(500).json({ message: "No se encontró approve link de PayPal" });
     }
 
-    // ✅ Plans.jsx espera res.url
     return res.json({
       ok: true,
-      url: approveLink,
-      approveUrl: approveLink,
+      url: approveLink,        // Plans.jsx espera res.url
+      approveUrl: approveLink, // compat
       orderId: orderData.id,
     });
   } catch (err) {
@@ -135,7 +147,7 @@ exports.captureOrder = async (req, res) => {
 
     const accessToken = await getPaypalAccessToken();
 
-    // 1) Capturamos
+    // 1) Captura
     const capRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${token}/capture`, {
       method: "POST",
       headers: {
@@ -151,10 +163,10 @@ exports.captureOrder = async (req, res) => {
       return res.redirect(`${CLIENT_URL}/billing/success?ok=0&reason=capture_failed`);
     }
 
-    // 2) Recuperar custom_id (userId) desde la orden
+    // 2) custom_id (userId|cycle)
     let customId = capData?.purchase_units?.[0]?.custom_id;
 
-    // A veces el capture response no lo trae → lo pedimos con GET
+    // A veces no viene → GET order
     if (!customId) {
       const getRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${token}`, {
         method: "GET",
@@ -165,15 +177,29 @@ exports.captureOrder = async (req, res) => {
       });
 
       const getData = await getRes.json();
-      if (getRes.ok) {
-        customId = getData?.purchase_units?.[0]?.custom_id;
-      }
+      if (getRes.ok) customId = getData?.purchase_units?.[0]?.custom_id;
     }
 
-    // 3) Activar PRO en DB
+    // 3) Activar PRO en DB (misma función, cambia duración)
     if (UserModel && customId) {
       try {
-        await UserModel.findByIdAndUpdate(customId, { plan: "pro" }, { new: true });
+        const [userIdPart, cyclePart] = String(customId).split("|");
+        const cycle = cyclePart === "year" ? "year" : "month";
+
+        const now = new Date();
+        const periodEnd = cycle === "year" ? addDays(now, 365) : addDays(now, 30);
+
+        await UserModel.findByIdAndUpdate(
+          userIdPart,
+          {
+            plan: "pro",
+            billingProvider: "paypal",
+            billingStatus: "active",
+            billingSubscriptionId: String(token), // guardamos orderId
+            billingCurrentPeriodEnd: periodEnd,
+          },
+          { new: true }
+        );
       } catch (e) {
         console.error("Error actualizando plan en DB:", e);
       }

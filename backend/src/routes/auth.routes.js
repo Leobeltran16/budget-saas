@@ -1,3 +1,4 @@
+// backend/routes/auth.routes.js
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
@@ -48,6 +49,7 @@ router.post("/register", async (req, res) => {
       password: hashed,
       role: "user",
       plan: "free",
+      // currency y currencyLocale quedan por default del modelo
     });
 
     return res.status(201).json({ ok: true, message: "Usuario creado ✅" });
@@ -63,9 +65,7 @@ router.post("/login", async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res
-        .status(400)
-        .json({ message: "Email y password son requeridos" });
+      return res.status(400).json({ message: "Email y password son requeridos" });
     }
 
     const user = await Usuario.findOne({ email: email.toLowerCase().trim() });
@@ -88,6 +88,8 @@ router.post("/login", async (req, res) => {
         email: user.email,
         role: user.role || "user",
         plan: user.plan || "free",
+        currency: user.currency || "USD",
+        currencyLocale: user.currencyLocale || "es-UY",
       },
     });
   } catch (err) {
@@ -105,6 +107,40 @@ router.get("/me", verificarToken, async (req, res) => {
     return res.json(user);
   } catch (err) {
     console.error("ME ERROR:", err);
+    return res.status(500).json({ message: "Error en el servidor" });
+  }
+});
+
+// ✅ NUEVO: PATCH /auth/me (protegida) -> guardar preferencias (moneda)
+router.patch("/me", verificarToken, async (req, res) => {
+  try {
+    const { currency, currencyLocale } = req.body;
+
+    const allowedCurrencies = ["USD", "UYU", "ARS", "CLP", "PEN", "BRL", "EUR", "MXN", "COP"];
+    const update = {};
+
+    if (currency !== undefined) {
+      const cur = String(currency).toUpperCase().trim();
+      if (!allowedCurrencies.includes(cur)) {
+        return res.status(400).json({ message: "Moneda inválida" });
+      }
+      update.currency = cur;
+    }
+
+    if (currencyLocale !== undefined) {
+      update.currencyLocale = String(currencyLocale).trim();
+    }
+
+    const user = await Usuario.findByIdAndUpdate(req.user.id, update, {
+      new: true,
+      runValidators: true,
+    }).select("-password");
+
+    if (!user) return res.status(404).json({ message: "Usuario no encontrado" });
+
+    return res.json(user);
+  } catch (err) {
+    console.error("PATCH ME ERROR:", err);
     return res.status(500).json({ message: "Error en el servidor" });
   }
 });
@@ -129,9 +165,7 @@ router.patch("/password", verificarToken, async (req, res) => {
 
     const ok = await bcrypt.compare(currentPassword, user.password);
     if (!ok) {
-      return res
-        .status(401)
-        .json({ message: "La contraseña actual no es correcta" });
+      return res.status(401).json({ message: "La contraseña actual no es correcta" });
     }
 
     const salt = await bcrypt.genSalt(10);

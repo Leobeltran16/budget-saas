@@ -1,3 +1,4 @@
+// backend/models/User.js
 const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema(
@@ -30,24 +31,36 @@ const userSchema = new mongoose.Schema(
       default: "free",
     },
 
+    // ✅ Moneda persistente por usuario
+    currency: {
+      type: String,
+      enum: ["USD", "UYU", "ARS", "CLP", "PEN", "BRL", "EUR", "MXN", "COP"],
+      default: "USD",
+      trim: true,
+      uppercase: true,
+    },
+
+    // ✅ Locale para formateo (Intl.NumberFormat)
+    currencyLocale: {
+      type: String,
+      default: "es-UY",
+      trim: true,
+    },
+
     // ✅ Billing / Suscripción (para monetización real)
     billingProvider: {
-      // "mercadopago" | "paypal" | "manual" | null
       type: String,
       default: null,
     },
     billingStatus: {
-      // "active" | "pending" | "cancelled" | "expired" | null
       type: String,
       default: null,
     },
     billingSubscriptionId: {
-      // id de suscripción del proveedor (ej. mp_preapproval_id o paypal_subscription_id)
       type: String,
       default: null,
     },
     billingCurrentPeriodEnd: {
-      // fecha fin del período pago (para vencer Pro automáticamente si querés)
       type: Date,
       default: null,
     },
