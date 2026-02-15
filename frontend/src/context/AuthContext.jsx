@@ -6,6 +6,19 @@ export const AuthContext = createContext(null);
 const LS_TOKEN = "token";
 const LS_USER = "user";
 
+// ✅ alineado con backend (evita 400)
+const SUPPORTED_CURRENCIES = [
+  "USD",
+  "UYU",
+  "ARS",
+  "BRL",
+  "CLP",
+  "COP",
+  "MXN",
+  "PEN",
+  "EUR",
+];
+
 function normalizeUser(u) {
   if (!u || typeof u !== "object") return null;
 
@@ -18,7 +31,19 @@ function normalizeUser(u) {
   const role = typeof u.role === "string" ? u.role : "user";
   const plan = typeof u.plan === "string" ? u.plan : "free";
 
-  return { ...u, name, email, role, plan };
+  // ✅ moneda preferida (persistente) — normalizada
+  const currencyRaw = typeof u.currency === "string" ? u.currency : "USD";
+  const currencyNorm = String(currencyRaw || "USD").toUpperCase().trim();
+  const currency = SUPPORTED_CURRENCIES.includes(currencyNorm)
+    ? currencyNorm
+    : "USD";
+
+  // ✅ locale preferido (opcional)
+  const currencyLocaleRaw =
+    typeof u.currencyLocale === "string" ? u.currencyLocale : "es-UY";
+  const currencyLocale = String(currencyLocaleRaw || "es-UY").trim() || "es-UY";
+
+  return { ...u, name, email, role, plan, currency, currencyLocale };
 }
 
 export function AuthProvider({ children }) {
@@ -35,6 +60,19 @@ export function AuthProvider({ children }) {
   const [authLoading, setAuthLoading] = useState(true);
 
   const isAuthenticated = useMemo(() => Boolean(token), [token]);
+
+  const persistUser = (u) => {
+    const nu = normalizeUser(u);
+    setUser(nu);
+
+    try {
+      localStorage.setItem(LS_USER, JSON.stringify(nu));
+    } catch {
+      // ignore
+    }
+
+    return nu;
+  };
 
   const logout = () => {
     setToken("");
@@ -81,16 +119,50 @@ export function AuthProvider({ children }) {
     setToken(t);
     localStorage.setItem(LS_TOKEN, t);
 
-    const nu = normalizeUser(newUser);
-    setUser(nu);
-    try {
-      localStorage.setItem(LS_USER, JSON.stringify(nu));
-    } catch {
-      // ignore
-    }
+    persistUser(newUser);
 
     // 🔥 Evita "plan pegado" / user incompleto
     await refreshMe(t);
+  };
+
+  // ✅ actualizar moneda (frontend + backend)
+  // Backend esperado: PATCH /auth/me  body: { currency, currencyLocale? }
+  const updateCurrency = async (currency, currencyLocale) => {
+    const cur = String(currency || "").toUpperCase();
+    if (!SUPPORTED_CURRENCIES.includes(cur)) {
+      throw new Error("Moneda inválida");
+    }
+    if (!token) throw new Error("No autenticado");
+
+    const prev = user?.currency || "USD";
+    const prevLocale = user?.currencyLocale || "es-UY";
+
+    // Optimista: se ve instantáneo
+    persistUser({
+      ...(user || {}),
+      currency: cur,
+      ...(currencyLocale ? { currencyLocale } : {}),
+    });
+
+    try {
+      const updated = await apiRequest("/auth/me", {
+        method: "PATCH",
+        token,
+        body: { currency: cur, ...(currencyLocale ? { currencyLocale } : {}) },
+      });
+
+      if (updated && typeof updated === "object") {
+        persistUser({ ...(user || {}), ...(updated || {}), currency: cur });
+      } else {
+        await refreshMe(token);
+      }
+
+      return cur;
+    } catch (err) {
+      // rollback
+      persistUser({ ...(user || {}), currency: prev, currencyLocale: prevLocale });
+      throw err;
+    }
   };
 
   useEffect(() => {
@@ -119,6 +191,8 @@ export function AuthProvider({ children }) {
       login,
       logout,
       refreshMe,
+      updateCurrency,
+      supportedCurrencies: SUPPORTED_CURRENCIES,
     }),
     [token, user, isAuthenticated, authLoading]
   );

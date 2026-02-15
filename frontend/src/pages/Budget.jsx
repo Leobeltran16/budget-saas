@@ -1,4 +1,5 @@
 import { useContext, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
 import { apiRequest } from "../services/api";
 
@@ -10,9 +11,55 @@ function formatMoneyUYU(n) {
   }).format(Number(n) || 0);
 }
 
+function Badge({ children, tone = "neutral" }) {
+  const cls =
+    tone === "success"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+      : tone === "warning"
+      ? "border-amber-200 bg-amber-50 text-amber-900"
+      : tone === "danger"
+      ? "border-red-200 bg-red-50 text-red-900"
+      : tone === "info"
+      ? "border-indigo-200 bg-indigo-50 text-indigo-900"
+      : "border-slate-200 bg-slate-50 text-slate-700";
+
+  return (
+    <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${cls}`}>
+      {children}
+    </span>
+  );
+}
+
+function AlertBox({ tone = "info", title, children }) {
+  const cls =
+    tone === "success"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+      : tone === "warning"
+      ? "border-amber-200 bg-amber-50 text-amber-900"
+      : tone === "danger"
+      ? "border-red-200 bg-red-50 text-red-900"
+      : "border-indigo-200 bg-indigo-50 text-indigo-900";
+
+  return (
+    <div className={`mt-4 rounded-2xl border p-4 text-sm ${cls}`}>
+      <div className="font-extrabold">{title}</div>
+      <div className="mt-1 opacity-90">{children}</div>
+    </div>
+  );
+}
+
+function Skeleton() {
+  return (
+    <div className="mt-4">
+      <div className="h-5 w-44 animate-pulse rounded bg-slate-200" />
+      <div className="mt-3 h-24 w-full animate-pulse rounded-2xl bg-slate-100" />
+      <div className="mt-3 h-16 w-full animate-pulse rounded-2xl bg-slate-100" />
+    </div>
+  );
+}
+
 export default function Budget({ monthItems = [], monthKey, onStatusChange }) {
   const { token, user } = useContext(AuthContext);
-
   const isPro = String(user?.plan || "").toLowerCase() === "pro";
 
   const [loading, setLoading] = useState(true);
@@ -20,7 +67,6 @@ export default function Budget({ monthItems = [], monthKey, onStatusChange }) {
 
   const [budgetAmount, setBudgetAmount] = useState("");
   const [serverBudget, setServerBudget] = useState(null);
-
   const [error, setError] = useState("");
 
   const totalMonth = useMemo(() => {
@@ -43,6 +89,11 @@ export default function Budget({ monthItems = [], monthKey, onStatusChange }) {
     if (totalMonth >= budgetNumber * 0.85) return "warn";
     return "ok";
   }, [totalMonth, budgetNumber]);
+
+  const remaining = useMemo(() => {
+    if (!budgetNumber) return 0;
+    return budgetNumber - totalMonth;
+  }, [budgetNumber, totalMonth]);
 
   useEffect(() => {
     if (typeof onStatusChange === "function") onStatusChange(status);
@@ -102,54 +153,109 @@ export default function Budget({ monthItems = [], monthKey, onStatusChange }) {
     }
   };
 
+  const barTone =
+    status === "over" ? "bg-red-600" : status === "warn" ? "bg-amber-500" : "bg-emerald-600";
+
+  const alertTone = status === "over" ? "danger" : status === "warn" ? "warning" : status === "ok" ? "success" : "info";
+
+  const alertTitle =
+    status === "over"
+      ? "Te pasaste del presupuesto"
+      : status === "warn"
+      ? "Cerca del límite"
+      : status === "ok"
+      ? "Vas bien"
+      : "Definí tu presupuesto";
+
+  const alertText =
+    status === "over"
+      ? `Te pasaste por ${formatMoneyUYU(Math.abs(remaining))}.`
+      : status === "warn"
+      ? `Te quedan ${formatMoneyUYU(Math.max(0, remaining))}. Estás arriba del 85%.`
+      : status === "ok"
+      ? `Te quedan ${formatMoneyUYU(Math.max(0, remaining))}.`
+      : "Configurá un monto para activar la barra y las alertas.";
+
   return (
     <div className="rounded-2xl border border-white/10 bg-white p-5 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+      {/* Header */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <h3 className="text-lg font-semibold text-slate-900">Presupuesto del mes</h3>
           <p className="mt-1 text-sm text-slate-600">
             Mes: <span className="font-semibold text-slate-900">{monthKey}</span>
           </p>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            {!isPro ? (
+              <Badge tone="info">Free: solo mes actual</Badge>
+            ) : (
+              <Badge tone="success">PRO</Badge>
+            )}
+
+            {serverBudget?._id ? (
+              <Badge tone="success">Guardado en servidor</Badge>
+            ) : (
+              <Badge>No guardado</Badge>
+            )}
+
+            {budgetNumber ? (
+              <Badge tone={status === "over" ? "danger" : status === "warn" ? "warning" : "success"}>
+                Uso: {percentUsed}%
+              </Badge>
+            ) : (
+              <Badge tone="info">Sin presupuesto</Badge>
+            )}
+          </div>
         </div>
 
-        {!isPro && (
-          <span className="inline-flex items-center rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-700">
-            Free: solo mes actual
-          </span>
-        )}
+        <div className="flex flex-wrap gap-2">
+          <Link
+            to="/expenses"
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+          >
+            Ver gastos
+          </Link>
+        </div>
       </div>
 
-      {error && (
-        <div className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-700">
-          {error}
+      {error ? (
+        <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+          <div className="font-extrabold">Ocurrió un error</div>
+          <div className="mt-1 opacity-90">{error}</div>
         </div>
-      )}
+      ) : null}
 
       {loading ? (
-        <div className="mt-4">
-          <div className="h-5 w-40 animate-pulse rounded bg-slate-200" />
-          <div className="mt-3 h-10 w-full animate-pulse rounded-xl bg-slate-100" />
-          <div className="mt-3 h-10 w-full animate-pulse rounded-xl bg-slate-100" />
-        </div>
+        <Skeleton />
       ) : (
         <>
           {/* Top numbers */}
-          <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="mt-4 grid gap-3 text-sm sm:grid-cols-4">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-slate-500">Presupuesto</p>
-              <p className="mt-1 text-base font-semibold text-slate-900">
+              <p className="mt-1 text-base font-extrabold text-slate-900">
                 {budgetNumber ? formatMoneyUYU(budgetNumber) : "—"}
               </p>
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-slate-500">Gastado</p>
-              <p className="mt-1 text-base font-semibold text-slate-900">{formatMoneyUYU(totalMonth)}</p>
+              <p className="mt-1 text-base font-extrabold text-slate-900">
+                {formatMoneyUYU(totalMonth)}
+              </p>
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-slate-500">{remaining >= 0 ? "Restante" : "Exceso"}</p>
+              <p className="mt-1 text-base font-extrabold text-slate-900">
+                {budgetNumber ? formatMoneyUYU(Math.abs(remaining)) : "—"}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-slate-500">Uso</p>
-              <p className="mt-1 text-base font-semibold text-slate-900">
+              <p className="mt-1 text-base font-extrabold text-slate-900">
                 {budgetNumber ? `${percentUsed}%` : "—"}
               </p>
             </div>
@@ -159,55 +265,37 @@ export default function Budget({ monthItems = [], monthKey, onStatusChange }) {
           <div className="mt-4">
             <div className="flex items-center justify-between text-xs text-slate-600">
               <span>Progreso</span>
-              <span>
-                {budgetNumber ? `${formatMoneyUYU(totalMonth)} / ${formatMoneyUYU(budgetNumber)}` : "Sin presupuesto"}
+              <span className="font-semibold text-slate-800">
+                {budgetNumber
+                  ? `${formatMoneyUYU(totalMonth)} / ${formatMoneyUYU(budgetNumber)}`
+                  : "Sin presupuesto"}
               </span>
             </div>
 
-            <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-slate-100">
+            <div className="relative mt-2 h-3 w-full overflow-hidden rounded-full bg-slate-100">
+              {/* Marks (85% and 100%) */}
+              <div className="absolute inset-y-0 left-[85%] w-[2px] bg-slate-300/80" title="85%" />
+              <div className="absolute inset-y-0 left-[99.5%] w-[2px] bg-slate-300/80" title="100%" />
+
               <div
-                className={`h-full rounded-full ${
-                  status === "over"
-                    ? "bg-red-600"
-                    : status === "warn"
-                    ? "bg-amber-500"
-                    : "bg-emerald-600"
-                }`}
+                className={`h-full rounded-full ${barTone}`}
                 style={{ width: `${budgetNumber ? percentUsed : 0}%` }}
               />
             </div>
 
-            {status === "none" && (
-              <p className="mt-2 text-xs text-slate-600">
-                Configurá un presupuesto para activar alertas.
-              </p>
-            )}
-
-            {status === "ok" && (
-              <p className="mt-2 text-xs text-emerald-700">
-                Vas bien: estás dentro del presupuesto.
-              </p>
-            )}
-
-            {status === "warn" && (
-              <p className="mt-2 text-xs text-amber-700">
-                Atención: estás cerca del límite (85%+).
-              </p>
-            )}
-
-            {status === "over" && (
-              <p className="mt-2 text-xs text-red-700">
-                Te pasaste del presupuesto.
-              </p>
-            )}
+            <AlertBox tone={alertTone} title={alertTitle}>
+              {alertText}
+            </AlertBox>
           </div>
 
           {/* Form */}
           <form onSubmit={saveBudget} className="mt-5 grid gap-3 sm:grid-cols-3">
             <label className="sm:col-span-2">
-              <span className="mb-1 block text-sm text-slate-600">Monto del presupuesto (UYU)</span>
+              <span className="mb-1 block text-sm font-semibold text-slate-700">
+                Monto del presupuesto (UYU)
+              </span>
               <input
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none"
+                className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900 outline-none focus:border-slate-300"
                 type="number"
                 min="0"
                 step="1"
@@ -215,12 +303,15 @@ export default function Budget({ monthItems = [], monthKey, onStatusChange }) {
                 onChange={(e) => setBudgetAmount(e.target.value)}
                 placeholder="Ej: 15000"
               />
+              <p className="mt-1 text-xs text-slate-500">
+                Sugerencia: poné un número redondo para que la barra sea más fácil de leer.
+              </p>
             </label>
 
             <button
               type="submit"
               disabled={saving}
-              className="mt-6 h-10 rounded-xl bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+              className="mt-0 h-12 rounded-2xl bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60 sm:mt-6"
             >
               {saving ? "Guardando..." : serverBudget ? "Actualizar" : "Guardar"}
             </button>

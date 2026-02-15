@@ -1,8 +1,9 @@
-import { useContext, useEffect, useMemo, useState } from "react";
+// src/pages/Expenses.jsx
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { AuthContext } from "../context/AuthContext";
 import { apiRequest } from "../services/api";
-import Budget from "./Budget";
 import EditExpenseModal from "../components/EditExpenseModal";
+import * as XLSX from "xlsx";
 
 const CATEGORIES = [
   "General",
@@ -16,79 +17,66 @@ const CATEGORIES = [
   "Otros",
 ];
 
-function parseMonthKeySafe(monthKey) {
-  const fallback = new Date();
-  const fb = {
-    monthKey: fallback.toISOString().slice(0, 7),
-    month: fallback.getMonth(),
-    year: fallback.getFullYear(),
-  };
+function parseMonthKeySafe(key) {
+  const [yStr, mStr] = String(key || "").split("-");
+  const year = Number(yStr);
+  const month = Number(mStr);
 
-  if (!monthKey || typeof monthKey !== "string") return fb;
+  const safeYear = Number.isFinite(year) ? year : new Date().getFullYear();
+  const safeMonthNum = Number.isFinite(month) ? month : new Date().getMonth() + 1;
 
-  const [y, m] = monthKey.split("-");
-  const year = Number(y);
-  const month = Number(m) - 1;
-
-  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 0 || month > 11) return fb;
-
-  return { monthKey, month, year };
-}
-
-function sanitizeDecimalInput(raw) {
-  // Mantiene solo dígitos y separador decimal (.,)
-  // - Permite "" , "1", "12", "12.5", "12,5"
-  // - Si pega " $ 1.234,50 " => "1234,50" (o "1234.50" según lo que quede)
-  const s = String(raw ?? "").trim();
-  if (!s) return "";
-
-  // Quitar todo menos dígitos, puntos y comas
-  let cleaned = s.replace(/[^\d.,]/g, "");
-
-  // Si hay más de un separador, dejamos el primero como decimal y el resto se elimina
-  // Ej: "1.234.567,89" -> "1234567,89"
-  // Estrategia simple: quitar separadores de miles asumiendo que el ÚLTIMO separador es el decimal si hay ambos.
-  const lastDot = cleaned.lastIndexOf(".");
-  const lastComma = cleaned.lastIndexOf(",");
-
-  const lastSep = Math.max(lastDot, lastComma);
-  if (lastSep !== -1) {
-    const intPart = cleaned.slice(0, lastSep).replace(/[.,]/g, "");
-    const decPart = cleaned.slice(lastSep + 1).replace(/[.,]/g, "");
-    const sepChar = cleaned[lastSep];
-    cleaned = decPart.length ? `${intPart}${sepChar}${decPart}` : `${intPart}${sepChar}`;
-  } else {
-    cleaned = cleaned.replace(/[.,]/g, "");
-  }
-
-  // Validación final: números + opcional separador + decimales
-  if (!/^[0-9]*([.,][0-9]*)?$/.test(cleaned)) return "";
-
-  return cleaned;
+  const monthIndex = Math.min(Math.max(safeMonthNum, 1), 12) - 1;
+  return { year: safeYear, month: monthIndex };
 }
 
 function toNumberFromDecimalString(value) {
-  // "123,45" -> 123.45
-  // "" -> NaN
-  const v = String(value ?? "").trim();
-  if (!v) return NaN;
-  return Number(v.replace(",", "."));
+  if (value === null || value === undefined) return NaN;
+  const s = String(value).trim();
+  if (!s) return NaN;
+  return Number(s.replace(/\s/g, "").replace(",", "."));
+}
+
+function formatMonthLabel(monthKey) {
+  // monthKey: "YYYY-MM"
+  if (!monthKey || typeof monthKey !== "string" || monthKey.length < 7) return monthKey;
+  const [y, m] = monthKey.split("-");
+  const date = new Date(Number(y), Number(m) - 1, 1);
+  return date.toLocaleDateString("es-UY", { month: "long", year: "numeric" });
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
 function Expenses() {
   const { token, user } = useContext(AuthContext);
 
   const isPro = String(user?.plan || "").toLowerCase() === "pro";
+  const currency = (user?.currency || "USD").toUpperCase();
   const userEmail = (user?.email || "").toLowerCase().trim();
-  const isDemoUser = userEmail.startsWith("demo"); // ✅ solo demo ve seed
+  const isDemoUser = userEmail.startsWith("demo"); // solo demo ve seed
 
-  const currentMonthKey = new Date().toISOString().slice(0, 7);
-  const [monthKey, setMonthKey] = useState(currentMonthKey);
+  // Congelamos el mes actual solo 1 vez (evita resets raros)
+  const initialMonthRef = useRef(new Date().toISOString().slice(0, 7));
 
+  // Mes seleccionado (persistente solo en frontend)
+  const [monthKey, setMonthKey] = useState(() => {
+    return localStorage.getItem("expenses_monthKey") || initialMonthRef.current;
+  });
+
+  // En Free: forzar mes actual (congelado)
   useEffect(() => {
-    if (!isPro) setMonthKey(currentMonthKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!isPro) setMonthKey(initialMonthRef.current);
   }, [isPro]);
+
+  // Persistir mes seleccionado (solo Pro realmente lo usa)
+  useEffect(() => {
+    try {
+      localStorage.setItem("expenses_monthKey", monthKey);
+    } catch {
+      // ignore
+    }
+  }, [monthKey]);
 
   const { month: selectedMonth, year: selectedYear } = useMemo(
     () => parseMonthKeySafe(monthKey),
@@ -100,6 +88,12 @@ function Expenses() {
   const [amount, setAmount] = useState(""); // string
   const [category, setCategory] = useState("General");
 
+  // ✅ fecha opcional:
+  // - si la dejás vacía => usa el mes seleccionado (monthKey-01)
+  // - si ponés una fecha => NO se borra al agregar (así cargás varios seguidos)
+  const [date, setDate] = useState(""); // "YYYY-MM-DD"
+  const lastDateRef = useRef(""); // recuerda la última fecha usada (por UX)
+
   // list
   const [items, setItems] = useState([]);
   const [error, setError] = useState("");
@@ -109,18 +103,16 @@ function Expenses() {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("date_desc");
 
-  // presupuesto status
-  const [budgetStatus, setBudgetStatus] = useState("none"); // none | ok | warn | over
-
   // UX states
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState(""); // "add" | "delete" | "seed" | "bulk" | "edit" | ""
   const [toast, setToast] = useState(null); // { type: "success"|"error", text: string }
+  const toastTimerRef = useRef(null);
 
-  // ✅ selección
+  // selección
   const [selectedIds, setSelectedIds] = useState(() => new Set());
 
-  // ✅ modal editar
+  // modal editar
   const [editOpen, setEditOpen] = useState(false);
   const [editId, setEditId] = useState("");
   const [editTitle, setEditTitle] = useState("");
@@ -129,9 +121,15 @@ function Expenses() {
 
   const showToast = (type, text) => {
     setToast({ type, text });
-    window.clearTimeout(showToast._t);
-    showToast._t = window.setTimeout(() => setToast(null), 2500);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 2500);
   };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   /* =========================
      API
@@ -140,11 +138,18 @@ function Expenses() {
   const loadExpenses = async () => {
     setError("");
     setLoading(true);
+
+    if (!token) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
+
     try {
       const data = await apiRequest("/expenses", { token });
       setItems(Array.isArray(data) ? data : []);
     } catch (err) {
-      const msg = err.message || "Error cargando gastos";
+      const msg = err?.message || "Error cargando gastos";
       setError(msg);
       showToast("error", msg);
     } finally {
@@ -155,7 +160,7 @@ function Expenses() {
   useEffect(() => {
     loadExpenses();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [token]);
 
   const addExpense = async (e) => {
     e.preventDefault();
@@ -175,22 +180,39 @@ function Expenses() {
       setBusyAction("");
       return;
     }
+    if (!token) {
+      showToast("error", "No hay token. Volvé a iniciar sesión.");
+      setBusyAction("");
+      return;
+    }
+
+    // ✅ Fecha final:
+    // 1) si escribiste/seleccionaste una fecha => usar esa
+    // 2) si no, pero ya venías cargando con una fecha => usar la última
+    // 3) si no, usar el primer día del mes seleccionado (monthKey-01)
+    const fallbackDate = `${monthKey}-01`;
+    const finalDate = date || lastDateRef.current || fallbackDate;
 
     try {
       await apiRequest("/expenses", {
         method: "POST",
         token,
-        body: { title: t, amount: a, category },
+        body: { title: t, amount: a, category, date: finalDate },
       });
 
+      // Limpio campos rápidos
       setTitle("");
       setAmount("");
       setCategory("General");
 
+      // ✅ NO limpiamos "date" para que puedas cargar varios gastos seguidos
+      // Si el usuario puso fecha, la recordamos
+      if (date) lastDateRef.current = date;
+
       showToast("success", "Gasto agregado ✅");
       await loadExpenses();
     } catch (err) {
-      const msg = err.message || "Error creando gasto";
+      const msg = err?.message || "Error agregando gasto";
       setError(msg);
       showToast("error", msg);
     } finally {
@@ -200,25 +222,26 @@ function Expenses() {
 
   const deleteExpense = async (id) => {
     setError("");
-    const ok = window.confirm("¿Seguro que querés eliminar este gasto?");
-    if (!ok) return;
-
     setBusyAction("delete");
+
+    if (!token) {
+      showToast("error", "No hay token. Volvé a iniciar sesión.");
+      setBusyAction("");
+      return;
+    }
 
     try {
       await apiRequest(`/expenses/${id}`, { method: "DELETE", token });
       showToast("success", "Gasto eliminado ✅");
+      await loadExpenses();
 
-      // si estaba seleccionado, lo sacamos
       setSelectedIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
-
-      await loadExpenses();
     } catch (err) {
-      const msg = err.message || "Error eliminando gasto";
+      const msg = err?.message || "Error eliminando gasto";
       setError(msg);
       showToast("error", msg);
     } finally {
@@ -226,18 +249,20 @@ function Expenses() {
     }
   };
 
-  // ✅ eliminar seleccionados (bulk)
   const deleteSelected = async () => {
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
-
-    const ok = window.confirm(`¿Eliminar ${ids.length} gasto(s) seleccionados?`);
-    if (!ok) return;
+    if (selectedIds.size === 0) return;
 
     setError("");
     setBusyAction("bulk");
 
+    if (!token) {
+      showToast("error", "No hay token. Volvé a iniciar sesión.");
+      setBusyAction("");
+      return;
+    }
+
     try {
+      const ids = Array.from(selectedIds);
       await apiRequest("/expenses/bulk", {
         method: "DELETE",
         token,
@@ -248,7 +273,7 @@ function Expenses() {
       setSelectedIds(new Set());
       await loadExpenses();
     } catch (err) {
-      const msg = err.message || "Error eliminando seleccionados";
+      const msg = err?.message || "Error eliminando seleccionados";
       setError(msg);
       showToast("error", msg);
     } finally {
@@ -256,18 +281,24 @@ function Expenses() {
     }
   };
 
-  // DEMO SEED (solo demo)
   const seedDemo = async () => {
-    if (!isDemoUser) return; // protección extra
+    if (!isDemoUser) return;
+
     setError("");
     setBusyAction("seed");
+
+    if (!token) {
+      showToast("error", "No hay token. Volvé a iniciar sesión.");
+      setBusyAction("");
+      return;
+    }
 
     try {
       const res = await apiRequest("/demo/seed", { method: "POST", token });
       showToast("success", res?.message || "Datos demo cargados ✅");
       await loadExpenses();
     } catch (err) {
-      const msg = err.message || "Error creando datos demo";
+      const msg = err?.message || "Error creando datos demo";
       setError(msg);
       showToast("error", msg);
     } finally {
@@ -275,11 +306,11 @@ function Expenses() {
     }
   };
 
-  // ✅ abrir modal editar
+  // abrir modal editar
   const openEdit = (expense) => {
     setEditId(expense._id);
     setEditTitle(expense.title || "");
-    setEditAmount(String(expense.amount ?? "")); // guardamos string
+    setEditAmount(String(expense.amount ?? "")); // string
     setEditCategory(expense.category || "General");
     setEditOpen(true);
   };
@@ -293,7 +324,7 @@ function Expenses() {
     setEditCategory("General");
   };
 
-  // ✅ guardar edición (título + monto + categoría)
+  // guardar edición
   const saveEdit = async () => {
     const t = editTitle.trim();
     const a = toNumberFromDecimalString(editAmount);
@@ -304,6 +335,10 @@ function Expenses() {
     }
     if (!Number.isFinite(a) || a < 0) {
       showToast("error", "El monto debe ser un número válido");
+      return;
+    }
+    if (!token) {
+      showToast("error", "No hay token. Volvé a iniciar sesión.");
       return;
     }
 
@@ -318,10 +353,10 @@ function Expenses() {
       });
 
       showToast("success", "Gasto actualizado ✅");
-      closeEdit();
       await loadExpenses();
+      closeEdit();
     } catch (err) {
-      const msg = err.message || "Error actualizando gasto";
+      const msg = err?.message || "Error actualizando gasto";
       setError(msg);
       showToast("error", msg);
     } finally {
@@ -330,76 +365,115 @@ function Expenses() {
   };
 
   /* =========================
-     HELPERS
+     helpers ui
   ========================= */
 
-  const formatMoney = (n) =>
-    new Intl.NumberFormat("es-UY", {
-      style: "currency",
-      currency: "UYU",
-      maximumFractionDigits: 0,
-    }).format(n);
+  const monthFiltered = useMemo(() => {
+    if (!isPro) return items;
 
-  const filtered = useMemo(() => {
-  const q = search.trim().toLowerCase();
-
-  // ✅ 1) primero filtramos por mes (solo lo que corresponde al mes seleccionado)
-  let arr = items.filter((x) => {
-    // ✅ Más seguro contra zona horaria:
-    // si x.date es ISO tipo "2026-01-17T..." o "2026-01-17..."
-    const key = String(x.date).slice(0, 7); // "YYYY-MM"
-    return key === monthKey;
-  });
-
-  // ✅ 2) filtro por categoría
-  if (filterCategory !== "Todas") {
-    arr = arr.filter((x) => (x.category || "General") === filterCategory);
-  }
-
-  // ✅ 3) búsqueda por título
-  if (q) {
-    arr = arr.filter((x) => (x.title || "").toLowerCase().includes(q));
-  }
-
-  // ✅ 4) orden
-  arr = [...arr].sort((a, b) => {
-    if (sortBy === "date_desc") return new Date(b.date) - new Date(a.date);
-    if (sortBy === "date_asc") return new Date(a.date) - new Date(b.date);
-    if (sortBy === "amount_desc") return (Number(b.amount) || 0) - (Number(a.amount) || 0);
-    if (sortBy === "amount_asc") return (Number(a.amount) || 0) - (Number(b.amount) || 0);
-    return 0;
-  });
-
-  return arr;
-}, [items, monthKey, filterCategory, search, sortBy]);
-
-
-  const monthItems = useMemo(() => {
     return items.filter((x) => {
-      const d = new Date(x.date);
+      const d = new Date(x.date || x.createdAt || x.updatedAt || Date.now());
       return d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
     });
-  }, [items, selectedMonth, selectedYear]);
+  }, [items, isPro, selectedMonth, selectedYear]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+
+    let arr = monthFiltered;
+
+    if (filterCategory !== "Todas") {
+      arr = arr.filter((x) => x.category === filterCategory);
+    }
+
+    if (q) {
+      arr = arr.filter((x) => {
+        const t = String(x.title || "").toLowerCase();
+        const c = String(x.category || "").toLowerCase();
+        return t.includes(q) || c.includes(q);
+      });
+    }
+
+    const copy = [...arr];
+
+    copy.sort((a, b) => {
+      const da = new Date(a.date || a.createdAt || 0).getTime();
+      const db = new Date(b.date || b.createdAt || 0).getTime();
+
+      if (sortBy === "date_desc") return db - da;
+      if (sortBy === "date_asc") return da - db;
+      if (sortBy === "amount_desc") return (Number(b.amount) || 0) - (Number(a.amount) || 0);
+      if (sortBy === "amount_asc") return (Number(a.amount) || 0) - (Number(b.amount) || 0);
+      return 0;
+    });
+
+    return copy;
+  }, [monthFiltered, filterCategory, search, sortBy]);
 
   const totalMonth = useMemo(() => {
-    return monthItems.reduce((acc, x) => acc + (Number(x.amount) || 0), 0);
-  }, [monthItems]);
+    return filtered.reduce((acc, x) => acc + (Number(x.amount) || 0), 0);
+  }, [filtered]);
 
   const totalsByCategory = useMemo(() => {
-    const map = {};
-    for (const x of monthItems) {
-      const cat = (x.category || "General").trim() || "General";
-      map[cat] = (map[cat] || 0) + (Number(x.amount) || 0);
+    const map = new Map();
+    for (const x of filtered) {
+      const cat = x.category || "General";
+      const prev = map.get(cat) || 0;
+      map.set(cat, prev + (Number(x.amount) || 0));
     }
-    return Object.entries(map).sort((a, b) => b[1] - a[1]);
-  }, [monthItems]);
+    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+  }, [filtered]);
 
-  // ✅ selección helpers (sobre la lista filtrada)
-  const selectedCount = selectedIds.size;
+  const formatMoney = (v) =>
+    new Intl.NumberFormat("es-UY", { style: "currency", currency }).format(v || 0);
+
+  // Excel (solo pro)
+  const exportExcel = () => {
+    if (!isPro) {
+      showToast("error", "Disponible solo en Pro");
+      return;
+    }
+
+    const rows = filtered.map((x) => ({
+      Fecha: new Date(x.date || x.createdAt || Date.now()).toLocaleDateString("es-UY"),
+      Titulo: x.title || "",
+      Categoria: x.category || "General",
+      Monto: Number(x.amount) || 0,
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Gastos");
+
+    const fileName = `gastos_${monthKey}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+  };
+
+  // WhatsApp (solo pro)
+  const shareWhatsApp = () => {
+    if (!isPro) {
+      showToast("error", "Disponible solo en Pro");
+      return;
+    }
+
+    const top = totalsByCategory
+      .slice(0, 5)
+      .map(([c, v]) => `- ${c}: ${formatMoney(v)}`)
+      .join("\n");
+
+    const text =
+      `Resumen de gastos (${formatMonthLabel(monthKey)})\n` +
+      `Total: ${formatMoney(totalMonth)}\n\n` +
+      (top ? `Top categorías:\n${top}` : "Sin gastos en este período.");
+
+    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
 
   const allFilteredSelected = useMemo(() => {
     if (filtered.length === 0) return false;
-    return filtered.every((x) => selectedIds.has(x._id));
+    for (const x of filtered) if (!selectedIds.has(x._id)) return false;
+    return true;
   }, [filtered, selectedIds]);
 
   const toggleOne = (id) => {
@@ -424,359 +498,347 @@ function Expenses() {
     });
   };
 
-  /* =========================
-     UI components
-  ========================= */
-
-  const Toast = () => {
-    if (!toast) return null;
-    const isOk = toast.type === "success";
-    return (
-      <div className="fixed right-4 top-4 z-[999]">
+  return (
+    <div className="mx-auto w-full max-w-6xl p-4 md:p-6">
+      {/* Toast */}
+      {toast && (
         <div
-          className={`rounded-2xl border px-4 py-3 text-sm shadow-lg backdrop-blur ${
-            isOk
-              ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-50"
-              : "border-red-400/30 bg-red-500/10 text-red-50"
+          className={`fixed right-4 top-4 z-[9999] pointer-events-none rounded-xl px-4 py-3 text-sm font-semibold shadow-lg ${
+            toast.type === "success" ? "bg-emerald-600 text-white" : "bg-red-600 text-white"
           }`}
         >
           {toast.text}
         </div>
-      </div>
-    );
-  };
-
-  const LoadingCard = () => (
-    <div className="rounded-2xl border border-white/10 bg-white p-5 shadow-sm">
-      <div className="h-5 w-40 animate-pulse rounded bg-slate-200" />
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <div className="h-20 animate-pulse rounded-xl bg-slate-100" />
-        <div className="h-20 animate-pulse rounded-xl bg-slate-100" />
-        <div className="h-20 animate-pulse rounded-xl bg-slate-100" />
-      </div>
-      <div className="mt-4 h-10 w-full animate-pulse rounded-xl bg-slate-100" />
-    </div>
-  );
-
-  
-
-  /* =========================
-     RENDER
-  ========================= */
-
-  return (
-    <div className="mx-auto w-full max-w-6xl">
-      <Toast />
-        <EditExpenseModal
-        open={editOpen}
-        onClose={closeEdit}
-        onSave={saveEdit}
-        busy={busyAction === "edit"}
-        editTitle={editTitle}
-        setEditTitle={setEditTitle}
-        editAmount={editAmount}
-        setEditAmount={setEditAmount}
-        editCategory={editCategory}
-        setEditCategory={setEditCategory}
-        CATEGORIES={CATEGORIES}
-        sanitizeDecimalInput={sanitizeDecimalInput}
-        />
+      )}
 
       {/* Header */}
-      <div className="mb-5">
-        <h1 className="text-3xl font-extrabold tracking-tight">Gastos</h1>
-        <p className="mt-1 text-sm text-slate-200/70">Gestión de gastos y presupuesto mensual.</p>
+      <div className="rounded-3xl bg-gradient-to-r from-indigo-600 to-fuchsia-600 p-6 text-white shadow-lg">
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h1 className="text-2xl font-extrabold tracking-tight md:text-3xl">Gastos</h1>
+            <p className="mt-1 text-white/80">Agregá, filtrá, editá y eliminá tus gastos.</p>
+          </div>
 
-        {/* Month selector (Pro) */}
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200/80">
-            Mes: <span className="ml-1 font-semibold text-slate-100">{monthKey}</span>
-          </span>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="rounded-2xl bg-white/10 px-4 py-3">
+              <div className="text-xs text-white/70">Total del mes</div>
+              <div className="text-lg font-extrabold">{formatMoney(totalMonth)}</div>
+            </div>
 
-          {isPro ? (
-            <label className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200/80">
-              <span className="text-slate-200/70">Elegir</span>
-              <input
-                type="month"
-                value={monthKey}
-                onChange={(e) => setMonthKey(e.target.value)}
-                className="rounded-md border border-white/10 bg-transparent px-2 py-1 text-xs text-slate-100 outline-none"
-              />
-            </label>
-          ) : (
-            <span className="inline-flex items-center rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-100">
-              Free: solo mes actual
-            </span>
-          )}
+            {isPro ? (
+              <label className="rounded-2xl bg-white/10 px-4 py-3">
+                <span className="block text-xs text-white/70">Mes</span>
+                <input
+                  type="month"
+                  className="mt-1 w-full rounded-xl bg-white/10 px-3 py-2 text-sm text-white outline-none placeholder:text-white/50"
+                  value={monthKey}
+                  onChange={(e) => setMonthKey(e.target.value)}
+                />
+              </label>
+            ) : (
+              <div className="rounded-2xl bg-white/10 px-4 py-3">
+                <div className="text-xs text-white/70">Mes</div>
+                <div className="text-sm font-semibold">{formatMonthLabel(monthKey)}</div>
+                <div className="mt-1 text-xs text-white/60">(Free: solo mes actual)</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Botones (se ven siempre, solo habilitados en Pro) */}
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+          <button
+            type="button"
+            onClick={exportExcel}
+            disabled={!isPro}
+            className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+            title={!isPro ? "Disponible solo en Pro" : "Exportar lo que estás viendo (filtros incluidos)"}
+          >
+            Exportar Excel
+          </button>
+
+          <button
+            type="button"
+            onClick={shareWhatsApp}
+            disabled={!isPro}
+            className="rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+            title={!isPro ? "Disponible solo en Pro" : "Compartir resumen por WhatsApp"}
+          >
+            Compartir WhatsApp
+          </button>
+
+          {!isPro && <div className="text-xs text-white/70 sm:ml-2">Disponible en Pro</div>}
         </div>
       </div>
 
-      {/* Alerts */}
-      {budgetStatus === "over" && (
-        <div className="mb-4 rounded-2xl border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-100">
-          <b>⚠️ Alerta:</b> Te pasaste del presupuesto del mes.
-        </div>
-      )}
+      {/* Controls */}
+      <div className="mt-6 grid gap-4 rounded-3xl border border-white/10 bg-white/5 p-5 shadow-sm md:grid-cols-3">
+        {/* Nuevo gasto */}
+        <div className="md:col-span-1">
+          <div className="text-sm font-semibold text-white">Nuevo gasto</div>
 
-      {budgetStatus === "warn" && (
-        <div className="mb-4 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
-          <b>⚠️ Atención:</b> Estás cerca del límite del presupuesto.
-        </div>
-      )}
+          <form onSubmit={addExpense} className="mt-3 space-y-3">
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Título"
+              className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm outline-none placeholder:text-slate-400 focus:border-indigo-400/40"
+            />
 
-      {/* Top cards */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        {loading ? (
-          <LoadingCard />
-        ) : (
-          <Budget monthItems={monthItems} monthKey={monthKey} onStatusChange={setBudgetStatus} />
-        )}
+            {/* ✅ Fecha opcional + atajos */}
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm outline-none placeholder:text-slate-400 focus:border-indigo-400/40"
+            />
 
-        <div className="rounded-2xl border border-white/10 bg-white p-5 shadow-sm">
-          <h3 className="text-lg font-semibold text-slate-900">Resumen del mes</h3>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setDate(todayISO())}
+                className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                title="Usar la fecha de hoy"
+              >
+                Hoy
+              </button>
 
-          <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-slate-500">Total</p>
-              <p className="mt-1 text-base font-semibold text-slate-900">{formatMoney(totalMonth)}</p>
+              <button
+                type="button"
+                onClick={() => setDate("")}
+                className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                title="Sin fecha: usa el mes seleccionado"
+              >
+                Sin fecha
+              </button>
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-slate-500">Cantidad</p>
-              <p className="mt-1 text-base font-semibold text-slate-900">{monthItems.length}</p>
-            </div>
+            {/* ✅ Monto: NO deja letras (solo números + coma/punto) */}
+            <input
+              value={amount}
+              onChange={(e) => {
+                const raw = e.target.value;
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-slate-500">Categorías</p>
-              <p className="mt-1 text-base font-semibold text-slate-900">{totalsByCategory.length}</p>
+                // permitir solo dígitos, coma y punto
+                let cleaned = raw.replace(/[^\d.,]/g, "");
+
+                // permitir solo un separador decimal
+                const firstSepIndex = cleaned.search(/[.,]/);
+                if (firstSepIndex !== -1) {
+                  const intPart = cleaned.slice(0, firstSepIndex);
+                  const sep = cleaned[firstSepIndex];
+                  const decPart = cleaned.slice(firstSepIndex + 1).replace(/[.,]/g, "");
+
+                  // máximo 2 decimales
+                  cleaned = intPart + sep + decPart.slice(0, 2);
+                }
+
+                setAmount(cleaned);
+              }}
+              placeholder="Monto (ej: 1200.50)"
+              className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm outline-none placeholder:text-slate-400 focus:border-indigo-400/40"
+              inputMode="decimal"
+            />
+
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm outline-none focus:border-indigo-400/40"
+            >
+              {CATEGORIES.map((c) => (
+                <option key={c} value={c} className="text-slate-900">
+                  {c}
+                </option>
+              ))}
+            </select>
+
+            <button
+              disabled={busyAction === "add"}
+              className="w-full rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-slate-900 hover:bg-slate-100 disabled:opacity-60"
+            >
+              {busyAction === "add" ? "Agregando..." : "Agregar"}
+            </button>
+
+            {isDemoUser && (
+              <button
+                type="button"
+                onClick={seedDemo}
+                disabled={busyAction === "seed"}
+                className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white hover:bg-white/10 disabled:opacity-60"
+              >
+                {busyAction === "seed" ? "Cargando..." : "Cargar demo"}
+              </button>
+            )}
+          </form>
+
+          {error && (
+            <div className="mt-3 rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Lista */}
+        <div className="md:col-span-2">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm font-semibold text-white">Tus gastos</div>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Buscar..."
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm outline-none placeholder:text-slate-400 focus:border-indigo-400/40 sm:w-56"
+              />
+
+              <select
+                value={filterCategory}
+                onChange={(e) => setFilterCategory(e.target.value)}
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm outline-none focus:border-indigo-400/40 sm:w-44"
+              >
+                <option value="Todas" className="text-slate-900">
+                  Todas
+                </option>
+                {CATEGORIES.map((c) => (
+                  <option key={c} value={c} className="text-slate-900">
+                    {c}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm outline-none focus:border-indigo-400/40 sm:w-44"
+              >
+                <option value="date_desc" className="text-slate-900">
+                  Fecha ↓
+                </option>
+                <option value="date_asc" className="text-slate-900">
+                  Fecha ↑
+                </option>
+                <option value="amount_desc" className="text-slate-900">
+                  Monto ↓
+                </option>
+                <option value="amount_asc" className="text-slate-900">
+                  Monto ↑
+                </option>
+              </select>
             </div>
           </div>
 
-          <div className="mt-4 text-sm text-slate-700">
-            <b className="text-slate-900">Por categoría:</b>
-            {totalsByCategory.length === 0 ? (
-              <p className="mt-2 text-slate-600">Sin gastos este mes.</p>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <label className="inline-flex items-center gap-3 text-sm text-slate-200/90">
+              <input
+                type="checkbox"
+                checked={allFilteredSelected}
+                onChange={toggleAllFiltered}
+                className="h-4 w-4 rounded border-white/20 bg-slate-950/40"
+              />
+              Seleccionar todos los filtrados
+            </label>
+
+            <button
+              onClick={deleteSelected}
+              disabled={busyAction === "bulk" || selectedIds.size === 0}
+              className="rounded-2xl bg-red-600 px-4 py-3 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-60"
+            >
+              {busyAction === "bulk"
+                ? "Eliminando..."
+                : `Eliminar seleccionados (${selectedIds.size})`}
+            </button>
+          </div>
+
+          <div className="mt-4 grid gap-3">
+            {loading ? (
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200/80">
+                Cargando...
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200/80">
+                No hay gastos para mostrar.
+              </div>
             ) : (
-              <ul className="mt-2 space-y-1">
-                {totalsByCategory.map(([cat, val]) => (
-                  <li key={cat} className="flex items-center justify-between gap-3">
-                    <span className="text-slate-700">{cat}</span>
-                    <span className="font-semibold text-slate-900">{formatMoney(val)}</span>
-                  </li>
-                ))}
+              <ul className="space-y-3">
+                {filtered.map((x) => {
+                  const checked = selectedIds.has(x._id);
+                  const dateLabel = new Date(
+                    x.date || x.createdAt || Date.now()
+                  ).toLocaleDateString("es-UY");
+
+                  return (
+                    <li
+                      key={x._id}
+                      className="flex flex-col gap-3 rounded-3xl border border-white/10 bg-white p-4 text-slate-900 shadow-sm sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleOne(x._id)}
+                          className="mt-1 h-4 w-4 rounded border-slate-300"
+                        />
+
+                        <div>
+                          <div className="font-extrabold">{x.title}</div>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">
+                              {x.category || "General"}
+                            </span>
+                            <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold">
+                              {dateLabel}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3 sm:flex-col sm:items-end sm:justify-center">
+                        <div className="font-extrabold text-slate-900">
+                          {formatMoney(Number(x.amount) || 0)}
+                        </div>
+
+                        <div className="mt-2 flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => openEdit(x)}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                          >
+                            Editar
+                          </button>
+
+                          <button
+                            onClick={() => deleteExpense(x._id)}
+                            disabled={busyAction === "delete"}
+                            className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-60"
+                          >
+                            {busyAction === "delete" ? "Eliminando..." : "Eliminar"}
+                          </button>
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
         </div>
       </div>
 
-      {/* Controls */}
-      <div className="mt-4 rounded-2xl border border-white/10 bg-white p-5 shadow-sm">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={loadExpenses}
-            disabled={loading || busyAction}
-            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
-          >
-            {loading ? "Cargando..." : "Refrescar"}
-          </button>
-
-          {isDemoUser ? (
-            <button
-              onClick={seedDemo}
-              disabled={busyAction || loading}
-              className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
-            >
-              {busyAction === "seed" ? "Cargando demo..." : "Cargar datos demo"}
-            </button>
-          ) : null}
-
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <span className="text-sm text-slate-600">
-              Seleccionados: <b className="text-slate-900">{selectedCount}</b>
-            </span>
-
-            <button
-              onClick={deleteSelected}
-              disabled={selectedCount === 0 || busyAction === "bulk"}
-              className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-60"
-            >
-              {busyAction === "bulk" ? "Eliminando..." : "Eliminar seleccionados"}
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-4 grid gap-3 md:grid-cols-4">
-          <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Filtro categoría</span>
-            <select
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
-              value={filterCategory}
-              onChange={(e) => setFilterCategory(e.target.value)}
-            >
-              <option value="Todas">Todas</option>
-              {CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="text-sm md:col-span-2">
-            <span className="mb-1 block text-slate-600">Buscar</span>
-            <input
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Ej: super"
-            />
-          </label>
-
-          <label className="text-sm">
-            <span className="mb-1 block text-slate-600">Orden</span>
-            <select
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-            >
-              <option value="date_desc">Fecha (nuevo → viejo)</option>
-              <option value="date_asc">Fecha (viejo → nuevo)</option>
-              <option value="amount_desc">Monto (mayor → menor)</option>
-              <option value="amount_asc">Monto (menor → mayor)</option>
-            </select>
-          </label>
-        </div>
-
-        {error && (
-          <div className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-50">
-            {error}
-          </div>
-        )}
-      </div>
-
-      {/* Form */}
-      <div className="mt-4 rounded-2xl border border-white/10 bg-white p-5 shadow-sm">
-        <h3 className="text-lg font-semibold text-slate-900">Agregar gasto</h3>
-
-        <form onSubmit={addExpense} className="mt-4 grid gap-3 md:grid-cols-4">
-          <input
-            className="md:col-span-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
-            placeholder="Título (Ej: Supermercado)"
-            value={title}
-            onChange={(e) => setTitle(e.target.value.replace(/\n/g, " "))}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") e.preventDefault();
-              }}
-            required
-          />
-
-          <input
-            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
-            placeholder="Monto (350 o 350,50)"
-            type="text"
-            inputMode="decimal"
-            value={amount}
-            onChange={(e) => setAmount(sanitizeDecimalInput(e.target.value))}
-            required
-          />
-
-          <select
-            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-          >
-            {CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-
-          <button
-            type="submit"
-            disabled={busyAction === "add"}
-            className="md:col-span-4 w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-          >
-            {busyAction === "add" ? "Agregando..." : "Agregar gasto"}
-          </button>
-        </form>
-      </div>
-
-      {/* List */}
-      <div className="mt-4 rounded-2xl border border-white/10 bg-white p-5 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-lg font-semibold text-slate-900">Mis gastos</h3>
-
-          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-            <input
-              type="checkbox"
-              checked={allFilteredSelected}
-              onChange={toggleAllFiltered}
-              className="h-4 w-4"
-            />
-            Seleccionar todo (según filtros)
-          </label>
-        </div>
-
-        {loading ? (
-          <p className="mt-3 text-sm text-slate-600">Cargando...</p>
-        ) : filtered.length === 0 ? (
-          <p className="mt-3 text-sm text-slate-600">No hay gastos con ese filtro/búsqueda.</p>
-        ) : (
-          <ul className="mt-4 space-y-2">
-            {filtered.map((x) => {
-              const checked = selectedIds.has(x._id);
-
-              return (
-                <li
-                  key={x._id}
-                  className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between"
-                >
-                  <div className="flex items-start gap-3">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleOne(x._id)}
-                      className="mt-1 h-4 w-4"
-                      aria-label="Seleccionar gasto"
-                    />
-
-                    <div className="text-sm">
-                      <p className="font-semibold text-slate-900">{x.title}</p>
-                      <p className="mt-1 text-slate-600">
-                        {x.category || "General"} · {new Date(x.date).toLocaleDateString()}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between gap-2 sm:justify-end">
-                    <span className="text-sm font-semibold text-slate-900">
-                      {formatMoney(Number(x.amount) || 0)}
-                    </span>
-
-                    <button
-                      onClick={() => openEdit(x)}
-                      disabled={busyAction === "edit"}
-                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
-                    >
-                      Editar
-                    </button>
-
-                    <button
-                      onClick={() => deleteExpense(x._id)}
-                      disabled={busyAction === "delete"}
-                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
-                    >
-                      {busyAction === "delete" ? "Eliminando..." : "Eliminar"}
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
+      {/* Modal editar */}
+      {editOpen && (
+        <EditExpenseModal
+          open={editOpen}
+          onClose={closeEdit}
+          onSave={saveEdit}
+          busy={busyAction === "edit"}
+          title={editTitle}
+          setTitle={setEditTitle}
+          amount={editAmount}
+          setAmount={setEditAmount}
+          category={editCategory}
+          setCategory={setEditCategory}
+          categories={CATEGORIES}
+        />
+      )}
     </div>
   );
 }

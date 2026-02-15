@@ -1,5 +1,5 @@
 import { useContext, useEffect, useMemo, useState } from "react";
-import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
 
 function cx(...arr) {
@@ -13,7 +13,10 @@ export default function Navbar() {
 
   const [open, setOpen] = useState(false);
 
-  const isPro = useMemo(() => String(user?.plan || "").toLowerCase() === "pro", [user]);
+  const isPro = useMemo(
+    () => String(user?.plan || "").toLowerCase() === "pro",
+    [user]
+  );
 
   const displayName = useMemo(() => {
     const n = (user?.name || user?.nombre || "").trim();
@@ -23,15 +26,13 @@ export default function Navbar() {
     return e.split("@")[0] || e;
   }, [user]);
 
-  const dashboardPath = isAuthenticated ? "/app" : "/";
-
-  // ✅ cerrar menú al cambiar de ruta
+  // cerrar menú al cambiar de ruta
   useEffect(() => {
     setOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname]);
 
-  // ✅ bloquear scroll cuando menú móvil está abierto
+  // bloquear scroll cuando menú móvil está abierto
   useEffect(() => {
     if (!open) return;
     const prev = document.body.style.overflow;
@@ -47,17 +48,19 @@ export default function Navbar() {
     navigate("/login");
   };
 
-  const NavItem = ({ to, children, onClick }) => (
+  const NavItem = ({ to, children, onClick, end }) => (
     <NavLink
       to={to}
       onClick={onClick}
       className={({ isActive }) =>
         cx(
           "rounded-xl px-3 py-2 text-sm font-semibold transition",
-          isActive ? "bg-white/10 text-white" : "text-slate-200/80 hover:bg-white/5 hover:text-white"
+          isActive
+            ? "bg-white/10 text-white"
+            : "text-slate-200/80 hover:bg-white/5 hover:text-white"
         )
       }
-      end={to === "/" || to === "/app"}
+      end={end}
     >
       {children}
     </NavLink>
@@ -67,13 +70,15 @@ export default function Navbar() {
     <header className="sticky top-0 z-50 border-b border-white/10 bg-slate-950/70 backdrop-blur">
       <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
         <div className="flex items-center gap-3">
-          <Link
-            to={dashboardPath}
+          {/* ✅ Brand: NavLink (misma pinta) */}
+          <NavLink
+            to={isAuthenticated ? "/app" : "/"}
+            end={!isAuthenticated} // solo marca activo en "/" cuando es público
             className="inline-flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2 text-sm font-extrabold tracking-tight text-white hover:bg-white/10"
           >
             <span className="inline-flex h-2.5 w-2.5 rounded-full bg-indigo-400" />
             Budget SaaS
-          </Link>
+          </NavLink>
 
           {isAuthenticated && (
             <span
@@ -84,14 +89,23 @@ export default function Navbar() {
                   : "border-indigo-400/30 bg-indigo-500/10 text-indigo-100"
               )}
             >
-              Plan: <span className="ml-1 font-semibold">{isPro ? "Pro" : "Free"}</span>
+              Plan:{" "}
+              <span className="ml-1 font-semibold">{isPro ? "Pro" : "Free"}</span>
             </span>
           )}
         </div>
 
         {/* Desktop */}
         <nav className="hidden items-center gap-1 md:flex">
-          <NavItem to={dashboardPath}>Dashboard</NavItem>
+          {isAuthenticated ? (
+            <NavItem to="/app" end>
+              Dashboard
+            </NavItem>
+          ) : (
+            <NavItem to="/" end>
+              Inicio
+            </NavItem>
+          )}
 
           {isAuthenticated ? (
             <>
@@ -134,10 +148,21 @@ export default function Navbar() {
 
       {/* Mobile menu */}
       {open && (
-        <div id="mobile-menu" className="border-t border-white/10 bg-slate-950/70 backdrop-blur md:hidden">
+        <div
+          id="mobile-menu"
+          className="border-t border-white/10 bg-slate-950/70 backdrop-blur md:hidden"
+        >
           <div className="mx-auto w-full max-w-7xl px-4 py-3 sm:px-6 lg:px-8">
             <div className="flex flex-col gap-1">
-              <NavItem to={dashboardPath}>Dashboard</NavItem>
+              {isAuthenticated ? (
+                <NavItem to="/app" end>
+                  Dashboard
+                </NavItem>
+              ) : (
+                <NavItem to="/" end>
+                  Inicio
+                </NavItem>
+              )}
 
               {isAuthenticated ? (
                 <>

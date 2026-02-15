@@ -1,3 +1,4 @@
+// src/pages/Plans.jsx
 import { useContext, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
@@ -12,21 +13,53 @@ function Toast({ type = "success", message, onClose }) {
 
   const styles =
     type === "error"
-      ? "bg-red-100 text-red-700 border-red-200"
-      : "bg-emerald-100 text-emerald-700 border-emerald-200";
+      ? "border-red-200 bg-red-50 text-red-800"
+      : "border-emerald-200 bg-emerald-50 text-emerald-800";
+
+  const title = type === "error" ? "Error" : "Listo";
 
   return (
-    <div className={cx("mt-4 rounded-xl border p-3 text-sm", styles)}>
-      <div className="flex items-start justify-between gap-3">
-        <p className="leading-5">{message}</p>
-        <button
-          onClick={onClose}
-          className="rounded-lg border border-black/10 bg-white px-2 py-1 text-xs font-semibold hover:bg-black/5"
-        >
-          Cerrar
-        </button>
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed right-4 top-4 z-[1000] w-[min(92vw,420px)]"
+    >
+      <div className={cx("rounded-2xl border p-4 shadow-lg", styles)}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-extrabold">{title}</div>
+            <p className="mt-1 text-sm leading-5">{message}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-xl border border-black/10 bg-white px-3 py-2 text-xs font-semibold text-slate-900 hover:bg-black/5"
+          >
+            Cerrar
+          </button>
+        </div>
       </div>
     </div>
+  );
+}
+
+function Badge({ children, tone = "neutral" }) {
+  const cls =
+    tone === "success"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+      : tone === "warning"
+      ? "border-amber-200 bg-amber-50 text-amber-900"
+      : tone === "danger"
+      ? "border-red-200 bg-red-50 text-red-900"
+      : tone === "info"
+      ? "border-indigo-200 bg-indigo-50 text-indigo-900"
+      : "border-slate-200 bg-slate-50 text-slate-800";
+
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${cls}`}
+    >
+      {children}
+    </span>
   );
 }
 
@@ -40,8 +73,17 @@ export default function Plans() {
   );
   const isPro = currentPlan === "pro";
 
-  const [busy, setBusy] = useState(""); // "free" | "pro" | ""
+  const [busy, setBusy] = useState(""); // "free" | "pro_month" | "pro_year" | ""
   const [toast, setToast] = useState({ type: "success", message: "" });
+
+  // ✅ Toast auto-cierre (4s)
+  useEffect(() => {
+    if (!toast.message) return;
+    const t = setTimeout(() => {
+      setToast({ type: "success", message: "" });
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [toast.message]);
 
   // ✅ Modal downgrade
   const [downgradeOpen, setDowngradeOpen] = useState(false);
@@ -111,18 +153,17 @@ export default function Plans() {
       return;
     }
 
-    // si está en PRO -> mostramos modal pro
+    // si está en PRO -> mostramos modal
     if (isPro) {
       openDowngrade();
       return;
     }
 
-    // si no es PRO -> aplicar free directo
     applyPlanFree();
   };
 
-  // ✅ Pasar a PRO (PayPal)
-  const startPayPal = async () => {
+  // ✅ Pasar a PRO (PayPal) — mensual o anual
+  const startPayPal = async (billingCycle) => {
     clearToast();
     if (!requireAuth()) return;
 
@@ -131,12 +172,14 @@ export default function Plans() {
       return;
     }
 
-    setBusy("pro");
+    const busyKey = billingCycle === "year" ? "pro_year" : "pro_month";
+    setBusy(busyKey);
+
     try {
       const res = await apiRequest("/billing/paypal/create-subscription", {
         method: "POST",
         token,
-        body: { plan: "pro" },
+        body: { plan: "pro", billingCycle }, // ✅ month | year
       });
 
       if (!res?.url) throw new Error("No se recibió la URL de PayPal");
@@ -150,6 +193,7 @@ export default function Plans() {
   const Card = ({
     title,
     price,
+    periodLabel,
     tag,
     features,
     cta,
@@ -161,10 +205,10 @@ export default function Plans() {
   }) => (
     <div
       className={cx(
-        "rounded-3xl border bg-white p-6 shadow-sm",
+        "rounded-3xl border bg-white p-6 text-slate-900 shadow-sm",
         highlight
           ? "border-emerald-400/40 ring-2 ring-emerald-400/20"
-          : "border-white/10"
+          : "border-slate-200/70"
       )}
     >
       <div className="flex items-start justify-between gap-3">
@@ -174,7 +218,7 @@ export default function Plans() {
         </div>
         <div className="text-right">
           <div className="text-2xl font-extrabold text-slate-900">{price}</div>
-          <div className="text-xs text-slate-500">por mes</div>
+          <div className="text-xs text-slate-500">{periodLabel}</div>
         </div>
       </div>
 
@@ -215,80 +259,153 @@ export default function Plans() {
   const proDisabled = busy !== "" || isPro;
 
   return (
-    <div className="mx-auto w-full max-w-6xl">
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <h1 className="text-3xl font-extrabold">Planes</h1>
-          <p className="mt-1 text-sm text-slate-400">
-            Elegí el plan que mejor se ajuste a tu uso.
+    <div className="mx-auto w-full max-w-6xl p-4 md:p-6">
+      {/* Header (igual Gastos/Home) */}
+      <div className="rounded-3xl bg-gradient-to-r from-indigo-600 to-fuchsia-600 p-6 text-white shadow-lg">
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h1 className="text-2xl font-extrabold tracking-tight md:text-3xl">
+              Planes
+            </h1>
+            <p className="mt-1 text-white/80">
+              Elegí el plan que mejor se ajuste a tu uso.
+            </p>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-white">
+                Plan actual:
+                <span className="ml-1 font-extrabold">
+                  {currentPlan.toUpperCase()}
+                </span>
+              </span>
+
+              <span className="inline-flex items-center rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-white">
+                Estado:
+                <span className="ml-1 font-extrabold">
+                  {isPro ? "PRO activo" : "Free"}
+                </span>
+              </span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Link
+              to="/app"
+              className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
+            >
+              Volver al Dashboard
+            </Link>
+            <Link
+              to="/profile"
+              className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-100"
+            >
+              Perfil
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      <Toast type={toast.type} message={toast.message} onClose={clearToast} />
+
+      {/* Contenedor estilo Gastos */}
+      <div className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-5 shadow-sm">
+        <div className="grid gap-4 md:grid-cols-3">
+          <Card
+            title="Free"
+            price="$0"
+            periodLabel="gratis"
+            tag="Para empezar"
+            features={["Gastos y presupuesto", "Mes actual", "Dashboard básico"]}
+            cta={
+              currentPlan === "free"
+                ? "Free activo"
+                : isPro
+                ? "Cancelar PRO (bajar a Free)"
+                : busy === "free"
+                ? "Aplicando..."
+                : "Usar Free"
+            }
+            onClick={onClickFree}
+            active={currentPlan === "free"}
+            disabled={freeDisabled}
+            footer={
+              isPro
+                ? "Si bajás a Free perdés funciones PRO. Para volver a PRO vas a tener que pagar nuevamente."
+                : "Ideal para probar la app."
+            }
+          />
+
+          <Card
+            title="Pro Mensual"
+            price="$5"
+            periodLabel="por mes"
+            tag="Uso completo"
+            features={[
+              "Elegir cualquier mes",
+              "Dashboard completo",
+              "Exportar (Excel/CSV)",
+              "Compartir por WhatsApp",
+            ]}
+            cta={
+              isPro
+                ? "Plan actual: PRO"
+                : busy === "pro_month"
+                ? "Redirigiendo a PayPal..."
+                : "Pagar y activar PRO mensual"
+            }
+            onClick={() => startPayPal("month")}
+            active={isPro}
+            disabled={proDisabled}
+            highlight
+            footer="Mismas funciones PRO. Duración: 30 días."
+          />
+
+          <Card
+            title="Pro Anual"
+            price="$50"
+            periodLabel="por año"
+            tag="Uso completo (mejor precio)"
+            features={[
+              "Todo lo de PRO",
+              "Elegir cualquier mes",
+              "Exportar (Excel/CSV)",
+              "Compartir por WhatsApp",
+            ]}
+            cta={
+              isPro
+                ? "Plan actual: PRO"
+                : busy === "pro_year"
+                ? "Redirigiendo a PayPal..."
+                : "Pagar y activar PRO anual"
+            }
+            onClick={() => startPayPal("year")}
+            active={isPro}
+            disabled={proDisabled}
+            highlight
+            footer="Mismas funciones PRO. Duración: 365 días."
+          />
+        </div>
+
+        <div className="mt-6 rounded-3xl bg-white p-5 text-slate-900 shadow-sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm font-semibold">¿Dudas?</div>
+            <Link to="/profile" className="text-sm font-semibold underline">
+              Ver perfil
+            </Link>
+          </div>
+          <p className="mt-2 text-sm text-slate-600">
+            Podés revisar tu estado, datos y acciones desde tu perfil.
           </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Badge tone="info">Pago seguro por PayPal</Badge>
+            <Badge tone="success">
+              PRO = mes histórico + export + WhatsApp
+            </Badge>
+            <Badge tone="warning">
+              Si bajás a Free, luego tenés que pagar de nuevo
+            </Badge>
+          </div>
         </div>
-        <div className="text-xs text-slate-400">
-          Plan actual: <span className="font-semibold text-white">{currentPlan.toUpperCase()}</span>
-        </div>
-      </div>
-
-      <Toast
-        type={toast.type}
-        message={toast.message}
-        onClose={clearToast}
-      />
-
-      <div className="mt-6 grid gap-4 md:grid-cols-2">
-        <Card
-          title="Free"
-          price="$0"
-          tag="Para empezar"
-          features={["Gastos y presupuesto", "Mes actual", "Dashboard básico"]}
-          cta={
-            currentPlan === "free"
-              ? "Free activo"
-              : isPro
-              ? "Cancelar PRO (bajar a Free)"
-              : busy === "free"
-              ? "Aplicando..."
-              : "Usar Free"
-          }
-          onClick={onClickFree}
-          active={currentPlan === "free"}
-          disabled={freeDisabled}
-          footer={
-            isPro
-              ? "Si bajás a Free perdés funciones PRO. Para volver a PRO vas a tener que pagar nuevamente."
-              : "Ideal para probar la app."
-          }
-        />
-
-        <Card
-          title="Pro"
-          price="$3"
-          tag="Uso completo"
-          features={[
-            "Elegir cualquier mes",
-            "Alertas de presupuesto",
-            "Dashboard completo",
-            "Export CSV (próximo)",
-          ]}
-          cta={
-            isPro
-              ? "Plan actual: Pro"
-              : busy === "pro"
-              ? "Redirigiendo a PayPal..."
-              : "Pagar y activar Pro"
-          }
-          onClick={startPayPal}
-          active={isPro}
-          disabled={proDisabled}
-          highlight
-          footer="Pago para activar PRO (en este MVP, si bajás a Free y querés volver, pagás otra vez)."
-        />
-      </div>
-
-      <div className="mt-6 text-sm text-slate-500">
-        ¿Dudas?{" "}
-        <Link to="/profile" className="underline">
-          Ver perfil
-        </Link>
       </div>
 
       {/* ✅ MODAL: Cancelar PRO */}
@@ -296,7 +413,6 @@ export default function Plans() {
         <div
           className="fixed inset-0 z-[999] flex items-center justify-center bg-black/50 p-4"
           onMouseDown={(e) => {
-            // click fuera para cerrar
             if (e.target === e.currentTarget) closeDowngrade();
           }}
         >
@@ -326,8 +442,7 @@ export default function Plans() {
               <ul className="space-y-2">
                 <li>• Vas a perder acceso a funciones PRO.</li>
                 <li>
-                  • Si querés volver a PRO, vas a tener que pagar nuevamente los{" "}
-                  <b>$3</b>.
+                  • Si querés volver a PRO, vas a tener que pagar nuevamente.
                 </li>
               </ul>
             </div>

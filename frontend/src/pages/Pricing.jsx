@@ -1,61 +1,20 @@
 // src/pages/Pricing.jsx
-import { useContext, useState } from "react";
+import { useContext, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
 import { apiRequest } from "../services/api";
 
 export default function Pricing() {
   const navigate = useNavigate();
-  const { user, isAuthenticated, login, token, refreshMe } = useContext(AuthContext);
+  const { user, isAuthenticated, login, refreshMe } = useContext(AuthContext);
 
-  const [loading, setLoading] = useState(false);
+  const [pendingPlan, setPendingPlan] = useState(null); // "free" | "pro" | null
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
 
-  const currentPlan = String(user?.plan || "free").toLowerCase();
-
-  const setPlan = async (plan) => {
-    setMsg("");
-    setError("");
-
-    if (!isAuthenticated) {
-      setError("Tenés que iniciar sesión para cambiar el plan.");
-      navigate("/login");
-      return;
-    }
-
-    const t = token || localStorage.getItem("token") || "";
-    if (!t) {
-      setError("No hay token. Volvé a iniciar sesión.");
-      navigate("/login");
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      const data = await apiRequest("/auth/plan", {
-        method: "PATCH",
-        token: t, // ✅ IMPORTANTE
-        body: { plan },
-      });
-
-      // ✅ FIX: AuthContext.login(newToken, newUser)
-      const nextPlan = String(data?.plan || plan).toLowerCase();
-      login(t, { ...user, plan: nextPlan });
-
-      // ✅ opcional pero recomendado: sincroniza user real desde backend (/auth/me)
-      if (typeof refreshMe === "function") {
-        await refreshMe(t);
-      }
-
-      setMsg(data?.message || "Plan actualizado ✅");
-    } catch (err) {
-      setError(err.message || "No se pudo actualizar el plan");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const currentPlan = useMemo(() => {
+    return String(user?.plan || "free").toLowerCase();
+  }, [user?.plan]);
 
   const Feature = ({ children }) => (
     <li className="flex items-start gap-2 text-sm text-slate-200/80">
@@ -65,6 +24,58 @@ export default function Pricing() {
       <span>{children}</span>
     </li>
   );
+
+  const changePlan = async (plan) => {
+    const next = String(plan).toLowerCase();
+
+    setMsg("");
+    setError("");
+
+    if (!isAuthenticated) {
+      // si no está logueado, lo mandamos a login
+      setError("Tenés que iniciar sesión para cambiar el plan.");
+      navigate("/login");
+      return;
+    }
+
+    const t = localStorage.getItem("token") || "";
+    if (!t) {
+      setError("No hay token. Volvé a iniciar sesión.");
+      navigate("/login");
+      return;
+    }
+
+    // Evitar requests duplicadas
+    if (pendingPlan) return;
+
+    setPendingPlan(next);
+
+    try {
+      const data = await apiRequest("/auth/plan", {
+        method: "PATCH",
+        token: t,
+        body: { plan: next },
+      });
+
+      const updatedPlan = String(data?.plan || next).toLowerCase();
+
+      // Mantener tu convención: login(token, user)
+      login(t, { ...(user || {}), plan: updatedPlan });
+
+      // Recomendado: sincronizar user real desde backend (/auth/me)
+      if (typeof refreshMe === "function") {
+        await refreshMe(t);
+      }
+
+      setMsg(data?.message || "Plan actualizado ✅");
+    } catch (err) {
+      setError(err?.message || "No se pudo actualizar el plan");
+    } finally {
+      setPendingPlan(null);
+    }
+  };
+
+  const isBusy = Boolean(pendingPlan);
 
   return (
     <div className="mx-auto w-full max-w-6xl">
@@ -76,13 +87,13 @@ export default function Pricing() {
             Planes (fase 1: estructura)
           </div>
 
-          <h1 className="mt-4 text-4xl font-extrabold tracking-tight">
+          <h1 className="mt-4 text-4xl font-extrabold tracking-tight text-white">
             Elegí el plan que te sirva
           </h1>
 
           <p className="mt-3 max-w-2xl text-sm text-slate-200/70">
-            Arrancá gratis y pasate a Pro cuando quieras. En esta fase, Pro es modo demo
-            para validar el flujo (sin pagos).
+            Arrancá gratis y pasate a Pro cuando quieras. En esta fase, Pro es modo
+            demo para validar el flujo (sin pagos).
           </p>
         </div>
 
@@ -90,7 +101,9 @@ export default function Pricing() {
           {isAuthenticated ? (
             <div>
               Tu plan actual:{" "}
-              <span className="font-semibold text-white">{currentPlan.toUpperCase()}</span>
+              <span className="font-semibold text-white">
+                {currentPlan.toUpperCase()}
+              </span>
             </div>
           ) : (
             <div>
@@ -128,7 +141,9 @@ export default function Pricing() {
         <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-sm">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-2xl font-extrabold tracking-tight text-white">Free</h2>
+              <h2 className="text-2xl font-extrabold tracking-tight text-white">
+                Free
+              </h2>
               <p className="mt-1 text-sm text-slate-200/70">
                 Ideal para empezar a controlar tu mes.
               </p>
@@ -158,11 +173,11 @@ export default function Pricing() {
             ) : (
               <button
                 type="button"
-                onClick={() => setPlan("free")}
-                disabled={loading}
+                onClick={() => changePlan("free")}
+                disabled={isBusy}
                 className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-slate-100 hover:bg-white/10 disabled:opacity-60"
               >
-                {loading ? "Actualizando..." : "Cambiar a Free"}
+                {pendingPlan === "free" ? "Actualizando..." : "Cambiar a Free"}
               </button>
             )}
           </div>
@@ -208,11 +223,11 @@ export default function Pricing() {
             ) : (
               <button
                 type="button"
-                onClick={() => setPlan("pro")}
-                disabled={loading}
+                onClick={() => changePlan("pro")}
+                disabled={isBusy}
                 className="w-full rounded-2xl bg-indigo-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-indigo-400 disabled:opacity-60"
               >
-                {loading ? "Activando..." : "Activar Pro (demo)"}
+                {pendingPlan === "pro" ? "Activando..." : "Activar Pro (demo)"}
               </button>
             )}
 
@@ -225,8 +240,8 @@ export default function Pricing() {
 
       {/* Footer note */}
       <div className="mt-6 text-xs text-slate-200/60">
-        Nota: el cambio de plan se guarda en tu usuario. Si cerrás sesión y volvés a entrar,
-        tu plan debería mantenerse.
+        Nota: el cambio de plan se guarda en tu usuario. Si cerrás sesión y volvés a
+        entrar, tu plan debería mantenerse.
       </div>
     </div>
   );
