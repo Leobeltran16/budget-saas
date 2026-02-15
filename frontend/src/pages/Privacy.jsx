@@ -11,24 +11,25 @@ export default function Privacy() {
       return;
     }
 
-   try {
-  setLoading(true);
+    try {
+      setLoading(true);
 
-  await apiRequest("/contact", {
-    method: "POST",
-    body: { email, message },
-  });
+      const response = await apiRequest("/contact", { method: "POST", body: { email, message } });
 
-  alert("Mensaje enviado correctamente ✅");
-  setEmail("");
-  setMessage("");
+      if (!response.ok) {
+        throw new Error("Error enviando mensaje");
+      }
 
-} catch (error) {
-  console.error(error);
-  alert(error?.message || "Error enviando mensaje ❌");
-} finally {
-  setLoading(false);
-}
+      alert("Mensaje enviado correctamente ✅");
+      setEmail("");
+      setMessage("");
+    } catch (error) {
+      console.error(error);
+      alert("Error enviando mensaje ❌");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-4xl p-6 bg-white text-slate-900 rounded-3xl shadow">
