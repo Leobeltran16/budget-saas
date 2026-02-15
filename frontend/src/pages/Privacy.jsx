@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { apiRequest } from "../services/api";
 
 export default function Privacy() {
   const [email, setEmail] = useState("");
@@ -14,18 +15,18 @@ export default function Privacy() {
     try {
       setLoading(true);
 
-      const response = await apiRequest("/contact", { method: "POST", body: { email, message } });
-
-      if (!response.ok) {
-        throw new Error("Error enviando mensaje");
-      }
+      // ✅ apiRequest NO devuelve response.ok (si falla, tira error)
+      await apiRequest("/contact", {
+        method: "POST",
+        body: { email, message },
+      });
 
       alert("Mensaje enviado correctamente ✅");
       setEmail("");
       setMessage("");
     } catch (error) {
       console.error(error);
-      alert("Error enviando mensaje ❌");
+      alert(error?.message || "Error enviando mensaje ❌");
     } finally {
       setLoading(false);
     }
@@ -46,26 +47,20 @@ export default function Privacy() {
         estrictamente necesaria para que el servicio funcione correctamente.
       </p>
 
-      <h2 className="mt-6 mb-2 font-bold text-slate-900">
-        Datos almacenados
-      </h2>
+      <h2 className="mt-6 mb-2 font-bold text-slate-900">Datos almacenados</h2>
       <ul className="mb-4 list-disc pl-6 text-slate-700">
         <li>Email de registro</li>
         <li>Gastos ingresados</li>
         <li>Plan de suscripción</li>
       </ul>
 
-      <h2 className="mt-6 mb-2 font-bold text-slate-900">
-        Pagos
-      </h2>
+      <h2 className="mt-6 mb-2 font-bold text-slate-900">Pagos</h2>
       <p className="mb-4 text-slate-700">
         Los pagos son procesados por PayPal. No almacenamos datos de tarjetas
         ni información bancaria.
       </p>
 
-      <h2 className="mt-6 mb-2 font-bold text-slate-900">
-        Seguridad
-      </h2>
+      <h2 className="mt-6 mb-2 font-bold text-slate-900">Seguridad</h2>
       <p className="mb-6 text-slate-700">
         Implementamos medidas razonables para proteger tu información.
       </p>
