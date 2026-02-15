@@ -6,7 +6,7 @@ function requireEnv(name) {
   return process.env[name] && String(process.env[name]).trim().length > 0;
 }
 
-// ✅ Crea transporter una sola vez (evita colgarse por verify() en cada request)
+// ✅ Crea transporter una sola vez
 function createTransporter() {
   if (!requireEnv("CONTACT_EMAIL") || !requireEnv("CONTACT_EMAIL_PASS")) {
     return null;
@@ -14,22 +14,25 @@ function createTransporter() {
 
   return nodemailer.createTransport({
     host: "smtp.gmail.com",
-    port: 465,
-    secure: true, // SSL
+    port: 587,
+    secure: false, // ✅ STARTTLS (mejor para servidores que bloquean 465)
+    requireTLS: true,
     auth: {
       user: process.env.CONTACT_EMAIL,
-      pass: process.env.CONTACT_EMAIL_PASS, // App Password
+      pass: process.env.CONTACT_EMAIL_PASS, // App Password (16 chars)
     },
-    // timeouts más agresivos para que NO quede colgado
-    connectionTimeout: 7000,
-    greetingTimeout: 7000,
-    socketTimeout: 12000,
+    tls: {
+      servername: "smtp.gmail.com",
+    },
+    // ✅ timeouts más amplios para Render (cold start / red lenta)
+    connectionTimeout: 20000,
+    greetingTimeout: 20000,
+    socketTimeout: 30000,
   });
 }
 
 let transporter = createTransporter();
 
-// ✅ helper para cortar una promesa si se cuelga
 function withTimeout(promise, ms, label = "TIMEOUT") {
   return Promise.race([
     promise,
@@ -54,13 +57,10 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // si Render reinició y transporter quedó null, lo recreamos
     if (!transporter) transporter = createTransporter();
 
     console.log("[/contact] incoming:", { email });
 
-    // ⚠️ NO hacemos verify() acá porque puede colgarse o demorar.
-    // Vamos directo al envío con timeout duro.
     const sendPromise = transporter.sendMail({
       from: `"Budget SaaS" <${process.env.CONTACT_EMAIL}>`,
       to: process.env.CONTACT_EMAIL,
@@ -74,14 +74,15 @@ router.post("/", async (req, res) => {
       `,
     });
 
-    // ✅ si se cuelga, cortamos a los 12s con error claro
-    await withTimeout(sendPromise, 12000, "SMTP_SEND_TIMEOUT");
+    // ✅ cortamos a los 30s con error claro (para que no quede “enviando” infinito)
+    await withTimeout(sendPromise, 30000, "SMTP_SEND_TIMEOUT");
 
     console.log("[/contact] sent OK");
     return res.json({ success: true, message: "Mensaje enviado" });
   } catch (error) {
-    console.error("Error en /contact:", error?.message);
-    console.error(error);
+    // ✅ logs completos para ver el motivo real en Render
+    console.error("CONTACT ERROR FULL:", error);
+    console.error("CONTACT ERROR MSG:", error?.message);
 
     return res.status(500).json({
       message: error?.message || "Error enviando mensaje",
