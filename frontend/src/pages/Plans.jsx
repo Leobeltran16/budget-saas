@@ -73,7 +73,12 @@ export default function Plans() {
   );
   const isPro = currentPlan === "pro";
 
-  const [busy, setBusy] = useState(""); // "free" | "pro_month" | "pro_year" | ""
+  const isAdmin = useMemo(
+    () => String(user?.role || "").toLowerCase().trim() === "admin",
+    [user]
+  );
+
+  const [busy, setBusy] = useState(""); // "free" | "pro_month" | "pro_year" | "pro_test_month" | "pro_test_year" | ""
   const [toast, setToast] = useState({ type: "success", message: "" });
 
   // ✅ Toast auto-cierre (4s)
@@ -163,7 +168,8 @@ export default function Plans() {
   };
 
   // ✅ Pasar a PRO (PayPal) — mensual o anual
-  const startPayPal = async (billingCycle) => {
+  // ahora soporta modo test solo admin: startPayPal("month", true)
+  const startPayPal = async (billingCycle, isTest = false) => {
     clearToast();
     if (!requireAuth()) return;
 
@@ -172,14 +178,31 @@ export default function Plans() {
       return;
     }
 
-    const busyKey = billingCycle === "year" ? "pro_year" : "pro_month";
+    // ✅ seguridad UX: el botón ni se muestra si no es admin, pero igual validamos acá
+    if (isTest && !isAdmin) {
+      showToast("error", "Acceso denegado (solo admin).");
+      return;
+    }
+
+    const busyKey = isTest
+      ? billingCycle === "year"
+        ? "pro_test_year"
+        : "pro_test_month"
+      : billingCycle === "year"
+      ? "pro_year"
+      : "pro_month";
+
     setBusy(busyKey);
 
     try {
       const res = await apiRequest("/billing/paypal/create-subscription", {
         method: "POST",
         token,
-        body: { plan: "pro", billingCycle }, // ✅ month | year
+        body: {
+          plan: "pro",
+          billingCycle, // ✅ month | year
+          ...(isTest ? { mode: "test" } : {}),
+        },
       });
 
       if (!res?.url) throw new Error("No se recibió la URL de PayPal");
@@ -285,6 +308,13 @@ export default function Plans() {
                   {isPro ? "PRO activo" : "Free"}
                 </span>
               </span>
+
+              {isAdmin ? (
+                <span className="inline-flex items-center rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-white">
+                  Rol:
+                  <span className="ml-1 font-extrabold">ADMIN</span>
+                </span>
+              ) : null}
             </div>
           </div>
 
@@ -349,11 +379,11 @@ export default function Plans() {
             cta={
               isPro
                 ? "Plan actual: PRO"
-                : busy === "pro_month"
+                : busy === "pro_month" || busy === "pro_test_month"
                 ? "Redirigiendo a PayPal..."
                 : "Pagar y activar PRO mensual"
             }
-            onClick={() => startPayPal("month")}
+            onClick={() => startPayPal("month", false)}
             active={isPro}
             disabled={proDisabled}
             highlight
@@ -374,17 +404,58 @@ export default function Plans() {
             cta={
               isPro
                 ? "Plan actual: PRO"
-                : busy === "pro_year"
+                : busy === "pro_year" || busy === "pro_test_year"
                 ? "Redirigiendo a PayPal..."
                 : "Pagar y activar PRO anual"
             }
-            onClick={() => startPayPal("year")}
+            onClick={() => startPayPal("year", false)}
             active={isPro}
             disabled={proDisabled}
             highlight
             footer="Mismas funciones PRO. Duración: 365 días."
           />
         </div>
+
+        {/* ✅ SOLO ADMIN: botones de prueba USD 1 */}
+        {isAdmin ? (
+          <div className="mt-4 rounded-3xl border border-amber-200 bg-amber-50 p-4 text-slate-900 shadow-sm">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-sm font-extrabold">Modo TEST (solo admin)</div>
+                <p className="mt-1 text-xs text-slate-600">
+                  Crea una orden PayPal por <b>USD 1</b> para probar en <b>LIVE</b> sin cambiar el precio real.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  disabled={busy !== "" || isPro}
+                  onClick={() => startPayPal("month", true)}
+                  className={cx(
+                    "rounded-2xl border px-4 py-2 text-sm font-semibold",
+                    busy !== "" || isPro
+                      ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-500"
+                      : "border-amber-300 bg-white text-slate-900 hover:bg-amber-100"
+                  )}
+                >
+                  TEST mensual (USD 1)
+                </button>
+
+                <button
+                  disabled={busy !== "" || isPro}
+                  onClick={() => startPayPal("year", true)}
+                  className={cx(
+                    "rounded-2xl border px-4 py-2 text-sm font-semibold",
+                    busy !== "" || isPro
+                      ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-500"
+                      : "border-amber-300 bg-white text-slate-900 hover:bg-amber-100"
+                  )}
+                >
+                  TEST anual (USD 1)
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <div className="mt-6 rounded-3xl bg-white p-5 text-slate-900 shadow-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
