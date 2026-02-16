@@ -1,8 +1,9 @@
 // controllers/paypal.controller.js
 
-const PAYPAL_API_BASE = (process.env.PAYPAL_MODE || "sandbox") === "live"
-  ? "https://api-m.paypal.com"
-  : "https://api-m.sandbox.paypal.com";
+const PAYPAL_API_BASE =
+  (process.env.PAYPAL_MODE || "sandbox") === "live"
+    ? "https://api-m.paypal.com"
+    : "https://api-m.sandbox.paypal.com";
 
 // ✅ Normalizamos URLs para evitar dobles //
 const RAW_BACKEND_URL =
@@ -67,13 +68,24 @@ function addDays(date, days) {
   return new Date(date.getTime() + ms);
 }
 
+function isAdminFromReq(req) {
+  const role = String(req.user?.role || "").toLowerCase().trim();
+  return role === "admin";
+}
+
 // ✅ POST /billing/paypal/create-subscription
 exports.createSubscription = async (req, res) => {
   try {
     const accessToken = await getPaypalAccessToken();
 
     const billingCycle = req.body?.billingCycle; // "month" | "year"
-    const { cycle, amount } = getPricingForCycle(billingCycle);
+    const { cycle, amount: normalAmount } = getPricingForCycle(billingCycle);
+
+    // ✅ Modo test SOLO admin (USD 1)
+    const mode = String(req.body?.mode || "").toLowerCase().trim(); // "test" | ""
+    const admin = isAdminFromReq(req);
+    const isTest = admin && mode === "test";
+    const amount = isTest ? "1.00" : normalAmount;
 
     const returnUrl = `${BACKEND_URL}/billing/paypal/capture`;
     const cancelUrl = `${CLIENT_URL}/billing/cancel`;
@@ -81,9 +93,12 @@ exports.createSubscription = async (req, res) => {
     // ✅ userId desde middleware (esta ruta requiere JWT)
     const userId = req.user?.id || null;
 
-    // ✅ guardamos userId + ciclo en custom_id
-    // formato: "<userId>|<cycle>"
-    const customId = userId ? `${String(userId)}|${cycle}` : null;
+    // ✅ guardamos userId + ciclo (+ test opcional) en custom_id
+    // formato normal: "<userId>|<cycle>"
+    // formato test:   "<userId>|<cycle>|test"
+    const customId = userId
+      ? `${String(userId)}|${cycle}${isTest ? "|test" : ""}`
+      : null;
 
     const orderRes = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
       method: "POST",
@@ -126,9 +141,13 @@ exports.createSubscription = async (req, res) => {
 
     return res.json({
       ok: true,
-      url: approveLink,        // Plans.jsx espera res.url
+      url: approveLink, // Plans.jsx espera res.url
       approveUrl: approveLink, // compat
       orderId: orderData.id,
+      // opcional: ayuda debug (no es sensible)
+      test: isTest,
+      cycle,
+      amount,
     });
   } catch (err) {
     console.error(err);
@@ -163,7 +182,7 @@ exports.captureOrder = async (req, res) => {
       return res.redirect(`${CLIENT_URL}/billing/success?ok=0&reason=capture_failed`);
     }
 
-    // 2) custom_id (userId|cycle)
+    // 2) custom_id (userId|cycle|[test])
     let customId = capData?.purchase_units?.[0]?.custom_id;
 
     // A veces no viene → GET order
@@ -183,7 +202,10 @@ exports.captureOrder = async (req, res) => {
     // 3) Activar PRO en DB (misma función, cambia duración)
     if (UserModel && customId) {
       try {
-        const [userIdPart, cyclePart] = String(customId).split("|");
+        // soporta: userId|cycle  o  userId|cycle|test
+        const parts = String(customId).split("|");
+        const userIdPart = parts[0];
+        const cyclePart = parts[1];
         const cycle = cyclePart === "year" ? "year" : "month";
 
         const now = new Date();
